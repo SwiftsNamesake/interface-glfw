@@ -4,7 +4,7 @@ version:             0.1.0.0
 -- description:
 homepage:            https://github.com/SwiftsNamesake/interface-glfw#readme
 license:             BSD3
-license-file:        LICENSE
+license-file:        LICENSE.md
 author:              Jonatan Sundqvist
 maintainer:          jonatanhsundqvist@gmail.com
 copyright:           2017 Jonatan Sundqvist
@@ -29,6 +29,7 @@ library
                      , containers
                      , linear
                      , linear-aabb
+  default-language:    Haskell2010
 
 executable interface-glfw
   hs-source-dirs:      app
