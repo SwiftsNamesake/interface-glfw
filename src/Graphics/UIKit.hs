@@ -299,13 +299,13 @@ onevent e = case e of
 run :: IO (Either String ()) -- EitherT String IO ()
 run = runEitherT $ do
   (win, channel) <- setup "UIKit" (V2 600 400)
-  (quad, tex) <- lift newQuad
-  lift $ loop (win, quad, tex, channel)
+  (quad, tex, program) <- lift newQuad
+  lift $ loop (win, quad, tex, program, channel)
   where
-    loop :: (GLFW.Window, Descriptor, GL.TextureObject, MessageChannel) -> IO ()
-    loop app@(win, quad, tex, channel) = do
+    loop :: (GLFW.Window, Descriptor, GL.TextureObject, GL.Program, MessageChannel) -> IO ()
+    loop app@(win, quad, tex, program, channel) = do
       new <- processMessages channel (\old msg -> return old) app
-      render (win, V2 600 400, tex, quad)
+      render (win, V2 600 400, tex, program, quad)
       GLFW.pollEvents
       close <- GLFW.windowShouldClose win
       unless close (loop new)
@@ -321,6 +321,7 @@ data Descriptor = Descriptor GL.VertexArrayObject GL.ArrayIndex GL.NumArrayIndic
 newTexture :: IO GL.TextureObject
 newTexture = do
   tex <- GL.genObjectName
+  setTexture tex
   GL.textureFilter GL.Texture2D $= ((GL.Linear', Nothing), GL.Linear')
   texture2DWrap $= (GL.Repeated, GL.ClampToEdge)
   return tex
@@ -358,8 +359,15 @@ newBuffer _ = do
 
 
 -- |
-newQuad :: IO (Descriptor, GL.TextureObject)
+newQuad :: IO (Descriptor, GL.TextureObject, GL.Program)
 newQuad = do
+  
+  -- Assemble the shader program
+  program <- loadShaders [
+    ShaderInfo GL.VertexShader (FileSource "assets/shaders/textured.vert"),
+    ShaderInfo GL.FragmentShader (FileSource "assets/shaders/textured.frag")]
+  GL.currentProgram $= Just program
+
   -- Create VAO
   triangles <- GL.genObjectName
   GL.bindVertexArrayObject $= Just triangles
@@ -391,24 +399,22 @@ newQuad = do
       vColour = GL.AttribLocation 1
   GL.vertexAttribPointer vColour $= (GL.ToFloat, GL.VertexArrayDescriptor 4 GL.Float 0 (bufferOffset cFirstIndex))
   GL.vertexAttribArray vColour $= GL.Enabled
-  
-  -- Assemble the shader program
-  program <- loadShaders [
-    ShaderInfo GL.VertexShader (FileSource "assets/shaders/textured.vert"),
-    ShaderInfo GL.FragmentShader (FileSource "assets/shaders/textured.frag")]
-  GL.currentProgram $= Just program
-
 
   -- Texture
   tex <- newTexture
+  putStrLn $ "tex object: " <> show tex
   setTexture tex
   loc <- GL.get (GL.uniformLocation program "tex")
   GL.uniform loc $= (GL.TextureUnit 0)
+  putStrLn $ "Tex uniform: " <> show loc
   --savePngImage "assets/out.png" (ImageRGBA8 drawing)
   uploadTexture drawing
 
+  --GettableStateVar [(GLint, VariableType, String)]
+  mapM_ print =<< (GL.get $ GL.activeUniforms program)
+
   -- Phew
-  return $ (Descriptor triangles vFirstIndex (fromIntegral numVertices), tex)
+  return $ (Descriptor triangles vFirstIndex (fromIntegral numVertices), tex, program)
   where
     vs          = concat . Geometry.triangles $ Geometry.planeXY (\x y z -> V4 x y z 1) 2 2 :: [V4 GL.GLfloat]
     vBufferSize = fromIntegral $ numVertices * maybe 0 sizeOf (listToMaybe vs)
@@ -426,8 +432,8 @@ newQuad = do
 crashOnError = GL.get GL.errors >>= \es -> unless (null es) (print es >> error "OpenGL errors halted the process")
 
 -- | A sketch of how the rendering might work.
-render :: (GLFW.Window, V2 Int, GL.TextureObject, Descriptor) -> IO ()
-render (win, V2 cx cy, tex, Descriptor triangles firstIndex numVertices) = do
+render :: (GLFW.Window, V2 Int, GL.TextureObject, GL.Program, Descriptor) -> IO ()
+render (win, V2 cx cy, tex, program, Descriptor triangles firstIndex numVertices) = do
   crashOnError
   GL.viewport   $= (GL.Position 0 0, GL.Size (fromIntegral cx) (fromIntegral cy))
   GL.clearColor $= GL.Color4 0 0 0 1
@@ -438,6 +444,8 @@ render (win, V2 cx cy, tex, Descriptor triangles firstIndex numVertices) = do
   --  GL.glUniformMatrix4fv loc 1 0 (castPtr (ptr :: Ptr (M44 CFloat)))
   crashOnError
   setTexture tex
+  loc <- GL.get (GL.uniformLocation program "tex")
+  GL.uniform loc $= (GL.TextureUnit 0)
   crashOnError
   GL.bindVertexArrayObject $= Just triangles
   crashOnError
@@ -515,7 +523,7 @@ uploadTexture (Image width height dat) = do
     GL.texImage2D -- Generate the texture
       GL.Texture2D
       GL.NoProxy  -- No proxy
-      2           -- No mipmaps
+      0           -- No mipmaps
       GL.RGBA8    -- Internal storage format: use R8G8B8A8 as internal storage
       (GL.TextureSize2D (fromIntegral width) (fromIntegral height)) -- Size of the image
       0                               -- No borders
