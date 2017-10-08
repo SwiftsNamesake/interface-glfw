@@ -1,0 +1,22 @@
+Configuring bytestring-trie-0.2.4.1...
+Building bytestring-trie-0.2.4.1...
+Preprocessing library bytestring-trie-0.2.4.1...
+[1 of 6] Compiling Data.Trie.Errors ( src\Data\Trie\Errors.hs, .stack-work\dist\ca59d0ab\build\Data\Trie\Errors.o )
+[2 of 6] Compiling Data.Trie.ByteStringInternal ( src\Data\Trie\ByteStringInternal.hs, .stack-work\dist\ca59d0ab\build\Data\Trie\ByteStringInternal.o )
+
+src\Data\Trie\ByteStringInternal.hs:68:19: warning: [-Wdeprecations]
+    In the use of `inlinePerformIO'
+    (imported from Data.ByteString.Internal):
+    Deprecated: "If you think you know what you are doing, use 'unsafePerformIO'. If you are sure you know what you are doing, use 'unsafeDupablePerformIO'. If you enjoy sharing an address space with a malevolent agent of chaos, try 'accursedUnutterablePerformIO'."
+
+src\Data\Trie\ByteStringInternal.hs:87:51: warning: [-Wdeprecations]
+    In the use of `inlinePerformIO'
+    (imported from Data.ByteString.Internal):
+    Deprecated: "If you think you know what you are doing, use 'unsafePerformIO'. If you are sure you know what you are doing, use 'unsafeDupablePerformIO'. If you enjoy sharing an address space with a malevolent agent of chaos, try 'accursedUnutterablePerformIO'."
+[3 of 6] Compiling Data.Trie.BitTwiddle ( src\Data\Trie\BitTwiddle.hs, .stack-work\dist\ca59d0ab\build\Data\Trie\BitTwiddle.o )
+[4 of 6] Compiling Data.Trie.Internal ( src\Data\Trie\Internal.hs, .stack-work\dist\ca59d0ab\build\Data\Trie\Internal.o )
+[5 of 6] Compiling Data.Trie        ( src\Data\Trie.hs, .stack-work\dist\ca59d0ab\build\Data\Trie.o )
+[6 of 6] Compiling Data.Trie.Convenience ( src\Data\Trie\Convenience.hs, .stack-work\dist\ca59d0ab\build\Data\Trie\Convenience.o )
+Installing library in
+C:\sr\snapshots\fe0c6596\lib\x86_64-windows-ghc-8.0.2\bytestring-trie-0.2.4.1-6DEC77Kan7U9FfTtx66IbD
+Registering bytestring-trie-0.2.4.1...
