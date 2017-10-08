@@ -18,17 +18,22 @@ library
   exposed-modules:     Graphics.UIKit
   build-depends:       base >= 4.7 && < 5
                      , either
+                     , vector
                      , text
+                     , bytestring
                      , transformers
                      , microlens
+                     , monad-loops
                      , safe-exceptions
                      , Rasterific
                      , OpenGL
-                     , stm
+                     , JuicyPixels
                      , GLFW-b
+                     , stm
                      , containers
                      , linear
                      , linear-aabb
+                     , cubist-sculptor
   default-language:    Haskell2010
 
 executable interface-glfw
