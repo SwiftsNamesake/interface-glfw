@@ -47,6 +47,9 @@ import Graphics.UIKit.Types
 (~>) :: s -> SimpleGetter s a -> a
 (~>) = (^.)
 
+infixl 8 ~>
+
+
 scroll :: Lens' Input (V2 Double)
 scroll f s = (\new -> s { fScroll = new }) <$> f (fScroll s)
 

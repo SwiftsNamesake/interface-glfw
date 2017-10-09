@@ -44,6 +44,8 @@ import qualified Data.ByteString as B
 import Control.Monad.Loops (whileJust)
 import Control.Monad.Trans.Either
 import Control.Concurrent.STM
+import Control.Concurrent.Async hiding (link)
+import Control.Concurrent (threadDelay)
 import Control.Monad.Trans.Class (MonadTrans (lift))
 import Control.Monad
 import Control.Exception.Safe
@@ -51,12 +53,16 @@ import Control.Exception.Safe
 import Linear
 import Lens.Micro
 
+import System.Random as Random
+
 import qualified Graphics.UI.GLFW as GLFW
 import           Graphics.UI.GLFW (MouseButton(..), Key(..), KeyState(..), MouseButtonState(..), CursorState(..))
 import qualified Graphics.Rendering.OpenGL as GL
 import           Graphics.Rendering.OpenGL (($=))
 import           Graphics.Rasterific as Rasterific
 import           Graphics.Rasterific.Texture as Rasterific
+import           Graphics.Text.TrueType as Font
+import qualified Graphics.Text.TrueType (Font(..))
 
 import Codec.Picture (Image(..), PixelRGB8(..), PixelRGBA8(..), DynamicImage(..), savePngImage)
 
@@ -112,7 +118,7 @@ setup title (V2 dx dy) = do
 setupEvents :: GLFW.Window -> IO MessageChannel
 setupEvents win = do
   channel <- newTChanIO
-  let put = atomically . writeTChan channel
+  let put = atomically . writeTChan channel -- TODO | - Return this (?)
   
   GLFW.setCursorPosCallback   win (Just $ \win mx my      -> put $ MouseMotion $ fmap realToFrac (V2 mx my))
   GLFW.setCursorEnterCallback win (Just $ \win st         -> put $ makeFocus st)
@@ -144,7 +150,7 @@ initial win = Input
                 <*> windowBounds win
                 <*> frameBounds win
                 <*> (Mouse <$> vectorise (GLFW.getCursorPos win) <*> pure Set.empty)
-                <*> pure (Set.empty)
+                <*> pure Set.empty
                 <*> (GLFW.getTime >>= \(Just t) -> pure t)
 
 
@@ -177,32 +183,120 @@ onevent e = case e of
   WindowClosing    -> id -- TODO | - Should 'Input' record the this (?)
   _                -> id
 
+---------------------
+
+-- | Temporary scene type
+data Scene = Scene {
+  window  :: GLFW.Window,
+  mesh    :: VAODescriptor,
+  texture :: GL.TextureObject,
+  program :: GL.Program,
+  font    :: Font,
+  input   :: Input,
+  channel :: MessageChannel,
+  fSnake  :: Snake
+}
+
+
+data Snake = Snake {
+  fBody    :: [V2 Int],
+  fHeading :: V2 Int,
+  fFruits  :: [V2 Int],
+  fBoardSize :: V2 Int
+}
+
+-----------------------------------------
+
+snake :: Lens' Scene Snake
+snake f s = (\new -> s { fSnake = new }) <$> f (fSnake s)
+
+body :: Lens' Snake [V2 Int]
+body f s = (\new -> s { fBody = new }) <$> f (fBody s)
+
+heading :: Lens' Snake (V2 Int)
+heading f s = (\new -> s { fHeading = new }) <$> f (fHeading s)
+
+fruits :: Lens' Snake [V2 Int]
+fruits f s = (\new -> s { fFruits = new }) <$> f (fFruits s)
+
+-----------------------------------------
+
+update :: SystemEvent -> Scene -> Scene
+update msg = case msg of
+  KeyDown Key'Left  -> snake.heading %~ turnLeft
+  KeyDown Key'Right -> snake.heading %~ turnRight
+  Tick              -> tick
+  _                 -> id
+  where
+    turnRight  = perp
+    turnLeft (V2 0  y') = V2 y'   0
+    turnLeft (V2 x' y') = V2 y' (-x')
+
+
+tick :: Scene -> Scene
+tick scene = scene & snake %~ eat
+  where
+    -- TODO | - Refactor
+    move _ [] = []
+    move d (h:b) = (h + d) : h : b
+
+    eat sn
+      | caughtFruit sn = sn & fruits %~ drop 1
+                            & body   %~ move (sn~>heading)
+      | otherwise = sn & body %~ init . move (sn~>heading)
+
+caughtFruit :: Snake -> Bool
+caughtFruit sn = sn~>fruits.to (take 1) == sn~>body.to (take 1)
+
+-----------------------------------------
 
 -- | 
 run :: IO (Either String ()) -- EitherT String IO ()
 run = runEitherT $ do
   (win, channel) <- setup "UIKit" (V2 600 400)
-  program <- newShader' "assets/shaders/textured.vert" "assets/shaders/textured.frag"
+  
+  program <- newShader "assets/shaders/textured.vert" "assets/shaders/textured.frag"
   lift (GL.currentProgram $= Just program)
+
   quad <- lift newQuad
+  font <- EitherT $ Font.loadFontFile "assets/fonts/3Dumb.ttf"
 
   -- Texture
   -- TODO | - Don't hard-code the texture
   tex <- lift newTexture
   lift $ setTexture tex
-  lift . uploadTexture $ drawing (V2 600 400)
 
-  lift $ loop (win, quad, tex, program, channel)
+  input <- lift $ initial win
+  
+  g <- lift Random.getStdGen
+
+  let scene = Scene win quad tex program font input channel snake
+      -- TODO | - Cool pattern, factor out and refactor
+      stream g = let (rx, g')  = Random.randomR (0, 14) g
+                     (ry, g'') = Random.randomR (0, 14) g'
+                 in V2 rx ry : stream g''
+      snake = Snake {
+                fBody    = [V2 6 6],
+                fHeading = V2 1 0,
+                fFruits  = stream g,
+                fBoardSize = V2 (14+1) (14+1) }
+  lift . uploadTexture $ drawing scene
+
+  lift . async . forever $ do
+    atomically . writeTChan channel $ Tick
+    threadDelay $ div (10^6) 8
+
+  lift $ loop scene
 
 
 -- |
-loop :: (GLFW.Window, VAODescriptor, GL.TextureObject, GL.Program, MessageChannel) -> IO ()
-loop app@(win, quad, tex, program, channel) = do
-  new <- processMessages channel (\old msg -> return old) app
-  render (win, V2 600 400, tex, program, quad)
+loop :: Scene -> IO ()
+loop scene = do
+  new <- processMessages (scene~>to channel) (\old msg -> return . update msg $ old { input = onevent msg (input old) }) scene
+  render scene
   GLFW.pollEvents
-  close <- GLFW.windowShouldClose win
-  unless close (loop new)
+  close <- GLFW.windowShouldClose $ scene~>to window
+  unless close $ loop new
 
 
 -- Render ----------------------------------------------------------------------
@@ -257,13 +351,6 @@ newAttribute location vs = do
 
 
 -- |
-newShader :: IO GL.Program
-newShader = loadShaders [
-  ShaderInfo GL.VertexShader (FileSource "assets/shaders/textured.vert"),
-  ShaderInfo GL.FragmentShader (FileSource "assets/shaders/textured.frag")]
-
-
--- |
 newQuad :: IO VAODescriptor
 newQuad = do
   vao     <- newVAO
@@ -272,71 +359,60 @@ newQuad = do
   return $ VAODescriptor vao 0 (fromIntegral $ count (vBuffer :: AttributeDescriptor))
   where
     -- TODO | - Should probably add uv coords to cubist-sculptor
-    uv = fmap (\(V4 x y _ _) -> pure 0.5 + V2 x y) vs :: [V2 GL.GLfloat] -- Texture coordinates
+    uv = fmap (\v -> pure 0.5 + fmap ((/2) . signum) (v~>_xy)) vs :: [V2 GL.GLfloat] -- Texture coordinates
     vs          = concat . Geometry.triangles $ Geometry.planeXY (\x y z -> V4 x y z 1) 2 2 :: [V4 GL.GLfloat]
 
 --------------------------------------------------------------------------------
 
 -- | A sketch of how the rendering might work.
-render :: (GLFW.Window, V2 Int, GL.TextureObject, GL.Program, VAODescriptor) -> IO ()
-render (win, V2 cx cy, tex, program, VAODescriptor triangles firstIndex numVertices) = do
-  GL.viewport   $= (GL.Position 0 0, GL.Size (fromIntegral cx) (fromIntegral cy))
+render :: Scene -> IO ()
+render scene = do
+  let (V2 dx dy) = scene~>to input.to fFrameSize
+  GL.viewport   $= (GL.Position 0 0, GL.Size (fromIntegral dx) (fromIntegral dy))
   GL.clearColor $= GL.Color4 0 0 0 1
   GL.clear [GL.ColorBuffer]
 
-  setTexture tex
+  setTexture $ scene~>to texture
   --loc <- GL.get (GL.uniformLocation program "tex")
   GL.uniform (GL.UniformLocation 0) $= (GL.TextureUnit 0) -- TODO | - Don't hard-code uniform location
+  (Just t) <- GLFW.getTime
+  uploadTexture $ drawing scene -- (V2 600 400) (realToFrac $ 10 + 20 * sin t)
 
+  renderVAO $ scene~>to mesh
+  GLFW.swapBuffers $ scene~>to window
+
+
+-- |
+renderVAO :: VAODescriptor -> IO ()
+renderVAO (VAODescriptor triangles firstIndex numVertices) = do
   GL.bindVertexArrayObject $= Just triangles
   GL.drawArrays GL.Triangles firstIndex numVertices
-  GLFW.swapBuffers win
-
---------------------------------------------------------------------------------
-
-data ShaderSource =
-     ByteStringSource B.ByteString
-     -- ^ The shader source code is directly given as a 'B.ByteString'.
-   | StringSource String
-     -- ^ The shader source code is directly given as a 'String'.
-   | FileSource FilePath
-     -- ^ The shader source code is located in the file at the given 'FilePath'.
-   deriving ( Eq, Ord, Show )
-
-getSource :: ShaderSource -> IO B.ByteString
-getSource (ByteStringSource bs) = return bs
-getSource (StringSource str) = return $ GL.packUtf8 str
-getSource (FileSource path) = B.readFile path
-
-data ShaderInfo = ShaderInfo GL.ShaderType ShaderSource deriving ( Eq, Ord, Show )
 
 --------------------------------------------------------------------------------
 
 -- TODO | - Should we care about GL.deleteObjectName
 
 -- |
-newShader' :: FilePath -> FilePath -> EitherT String IO GL.Program
-newShader' vPath fPath = handleIO
-                           (left . show)                           
-                           (do program <- lift $ GL.createProgram
-                               vertex   <- shaderComponent program vPath GL.VertexShader
-                               fragment <- shaderComponent program fPath GL.FragmentShader
-                               link program)
-  --where
-    --tryCreateResource create delete f = bracketOnError create delete f
+newShader :: FilePath -> FilePath -> EitherT String IO GL.Program
+newShader vPath fPath = handleIO
+                          (left . show)                           
+                          (do program <- lift $ GL.createProgram
+                              vertex   <- shaderComponent program vPath GL.VertexShader
+                              fragment <- shaderComponent program fPath GL.FragmentShader
+                              link program)
 
 
 -- |
 shaderComponent :: GL.Program -> FilePath -> GL.ShaderType -> EitherT String IO GL.Shader
 shaderComponent program path kind = do
-  shader <- lift (GL.createShader kind)
-  src <- lift (B.readFile path)
-  lift $ GL.shaderSourceBS shader $= src
-  lift $ GL.compileShader shader
-  ok <- lift $ GL.get (GL.compileStatus shader)
-  unless ok $ do
-    log <- lift $ GL.get (GL.shaderInfoLog shader)
-    left log
+  (ok, shader) <- lift $ do
+    shader <- GL.createShader kind
+    src <- B.readFile path
+    GL.shaderSourceBS shader $= src
+    GL.compileShader shader
+    ok <- GL.get $ GL.compileStatus shader
+    return (ok, shader)
+  unless ok $ lift (GL.get $ GL.shaderInfoLog shader) >>= left
   lift $ GL.attachShader program shader
   right shader
 
@@ -351,9 +427,10 @@ link program = do
     left log
   right program
 
+
 -- |
 --ensure :: _
---ensure check log = do
+--ensure = do
 
 --------------------------------------------------------------------------------
 
@@ -364,13 +441,13 @@ uploadTexture :: Image PixelRGBA8 -> IO ()
 uploadTexture (Image width height dat) = do
   -- Access the data vector pointer
   V.unsafeWith dat $ \ptr ->
-    GL.texImage2D -- Generate the texture
-      GL.Texture2D
-      GL.NoProxy  -- No proxy
-      0           -- No mipmaps
-      GL.RGBA8    -- Internal storage format: use R8G8B8A8 as internal storage
+    GL.texImage2D    -- Generate the texture
+      (GL.Texture2D) --
+      (GL.NoProxy)   -- No proxy
+      (0)            -- No mipmaps
+      (GL.RGBA8)     -- Internal storage format: use R8G8B8A8 as internal storage
       (GL.TextureSize2D (fromIntegral width) (fromIntegral height)) -- Size of the image
-      0                               -- No borders
+      (0)                               -- No borders
       (GL.PixelData GL.RGBA GL.UnsignedByte ptr) -- The pixel data: the vector contains Bytes, in RGBA order
 
 
@@ -388,30 +465,41 @@ refreshTexture (Image width height dat) = do
 --------------------------------------------------------------------------------
 
 -- | Set texture coordinate wrapping options for both the 'S' and 'T'
--- dimensions of a 2D texture.
+--   dimensions of a 2D texture.
+-- Borrowed from GLUtil
 texture2DWrap :: GL.StateVar (GL.Repetition, GL.Clamping)
-texture2DWrap = GL.makeStateVar (GL.get (GL.textureWrapMode GL.Texture2D GL.S))
-                             (forM_ [GL.S,GL.T] . aux)
+texture2DWrap = GL.makeStateVar
+                  (GL.get (GL.textureWrapMode GL.Texture2D GL.S))
+                  (forM_ [GL.S,GL.T] . aux)
   where aux x d = GL.textureWrapMode GL.Texture2D d $= x
 
 --------------------------------------------------------------------------------
 
 -- |
-drawing :: V2 Int -> Image PixelRGBA8
-drawing (V2 dx dy) = renderDrawing dx dy white $ do
-                       withTexture (uniformTexture $ PixelRGBA8 0 0 0 255) $
-                         stroke 3 JoinRound (CapStraight 0, CapStraight 0) path
-                       withTexture (uniformTexture drawColor) $ do
-                         fill $ circle (V2 300 200) 140
-                         withPathOrientation path 0 $ do
-                             --printTextAt font (PointSize 24) (V2 0 0) "Text on path"
-                             forM_ [10, 20 .. 100] $ \r -> fill $ circle (V2 0 0) 10
-                             --fill $ rectangle (V2 0 0) 30 20
-                             --fill $ rectangle (V2 0 0) 10 20
-                             --fill $ rectangle (V2 0 0) 20 20
-                             --fill $ rectangle (V2 0 0) 20 50    
+drawing :: Scene -> Image PixelRGBA8
+drawing scene = do
+  let (V2 dx dy) = scene~>to input.to fFrameSize
+  renderDrawing dx dy white $ do
+    --withTexture (uniformTexture $ PixelRGBA8 0 0 0 255) $
+    --  stroke 3 JoinRound (CapStraight 0, CapStraight 0) path
+    withTexture (uniformTexture drawColor) $ do
+      fill $ circle (scene~>to input.to fMouse.to fCursor.to (fmap realToFrac)) 60
+      printTextAt (scene~>to font) (PointSize 25) (V2 40 40) text
+      withPathOrientation path 0 $ do
+        forM_ [10, 12 .. 20] $ \r -> fill $ circle (V2 0 0) r
+    
+    let tileSz@(V2 dx dy) = V2 24 24
+        origin = V2 130 40
+        sz     = scene~>snake.to fBoardSize.to (fmap fromIntegral)
+  
+    withTexture (uniformTexture $ PixelRGBA8 255 0 0 255) $ do
+      stroke 4 JoinRound (CapRound, CapRound) $ rectangle origin (dx*sz~>x) (dy*sz~>y)
+    withTexture (uniformTexture $ PixelRGBA8 255 0 0 255) $ do
+      fill $ rectangle (origin + tileSz * (fromIntegral <$> (scene~>snake.fruits.to head))) dx dy
+      withTexture (uniformTexture $ PixelRGBA8 0 0 0 255) $ do
+        forM_ (scene~>snake.body.to (fmap (fmap fromIntegral))) $ \p -> fill $ rectangle (origin + V2 2 2 + tileSz * p) (dx - 4) (dy - 4)
   where
+    text = let (V2 mx my) = scene~>to input.to fMouse.to fCursor in "The Mouse: " <> show mx <> " , " <> show my
     white = PixelRGBA8 255 255 255 255
     drawColor = PixelRGBA8 0 0x86 0xc1 255
     path = Path (V2 100 180) False [PathCubicBezierCurveTo (V2 20 20) (V2 170 20) (V2 300 200)]
-

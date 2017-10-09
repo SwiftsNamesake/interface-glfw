@@ -60,6 +60,9 @@ data SystemEvent = MouseMotion (V2 Double)
                  | WindowClosing
                  | MouseEnter
                  | MouseLeave
+                 -- TODO | - Remove (just for testing)
+                 --        - Or maybe expose animation event
+                 | Tick
                  deriving (Eq, Show)
 
 
