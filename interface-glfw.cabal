@@ -16,6 +16,9 @@ cabal-version:       >=1.10
 library
   hs-source-dirs:      src
   exposed-modules:     Graphics.UIKit
+                     , Graphics.UIKit.Types
+                     , Graphics.UIKit.Lenses
+                     , Control.Loops
   build-depends:       base >= 4.7 && < 5
                      , either
                      , vector

@@ -46,7 +46,7 @@ import Control.Monad.Trans.Either
 import Control.Concurrent.STM
 import Control.Monad.Trans.Class (MonadTrans (lift))
 import Control.Monad
-import Control.Exception
+import Control.Exception.Safe
 
 import Linear
 import Lens.Micro
@@ -64,132 +64,15 @@ import Foreign.Marshal.Array (withArray)
 import Foreign.Ptr (plusPtr, nullPtr, Ptr)
 import Foreign.Storable (sizeOf)
 
+-- * 
 import qualified Geometry.Sculptor.Shapes as Geometry
 
--- Definitions -----------------------------------------------------------------
+-- *
+import Control.Loops
 
--- |
--- TODO | - Timestamps
---        -
--- newtype InputChannel = InputChannel (TChan SystemEvent)
-type MessageChannel = TChan SystemEvent
-
--- |
--- TODO | - Complete (resize, minimise, maximise, enter, leave, Pending FileDrop, etc.)
---        - Elm style event mapping (eg. UIEvent -> AppAction) (?)
---        - Rename (?)
-data SystemEvent = MouseMotion (V2 Double)
-                 | MouseDown   MouseButton
-                 | MouseUp     MouseButton
-                 | MouseScroll (V2 Double)
-                 | KeyDown     Key
-                 | KeyUp       Key
-                 | KeyRepeat   Key
-                 | FileDrop    [String]
-                 -- | FileChanged () -- TODO: Fix
-                 | WindowClosing
-                 | MouseEnter
-                 | MouseLeave
-                 deriving (Eq, Show)
-
-
--- |
--- TODO | - Rename, or break up
-data Input = Input {
-  -- fBounds   :: AABB V2 Int,
-  --fWindow       :: GLFW.Window,
-  --fRespond      :: app -> SystemEvent -> IO app,
-  fScroll       :: V2 Double,
-  -- TODO | - Framebuffer (client), or entire window
-  --        - Rename
-  --        - Position of framebuffer w.r.t. the window
-  fWindowRect   :: AABB V2 Int,
-  fFrameSize    :: V2 Int,
-  fMouse        :: Mouse,
-  fKeyboard     :: Set Key,
-  fTime         :: Double -- Current time (updated on each `tick`)
-  --fMessages     :: MessageChannel
-} -- deriving (Show)
-
-
--- |
-data Mouse = Mouse {
-  fCursor  :: V2 Double,
-  fButtons :: Set MouseButton
-} deriving (Show)
-
---------------------------------------------------------------------------------
-
--- TODO | - Factor out
-
--- | A poor man's over
-(~>) :: s -> SimpleGetter s a -> a
-(~>) = (^.)
-
-scroll :: Lens' Input (V2 Double)
-scroll f s = (\new -> s { fScroll = new }) <$> f (fScroll s)
-
-windowRect :: Lens' Input (AABB V2 Int)
-windowRect f s = (\new -> s { fWindowRect = new }) <$> f (fWindowRect s)
-
-frameSize :: Lens' Input (V2 Int)
-frameSize f s = (\new -> s { fFrameSize = new }) <$> f (fFrameSize s)
-
-mouse :: Lens' Input (Mouse)
-mouse f s = (\new -> s { fMouse = new }) <$> f (fMouse s)
-
-keyboard :: Lens' Input (Set Key)
-keyboard f s = (\new -> s { fKeyboard = new }) <$> f (fKeyboard s)
-
-time :: Lens' Input (Double)
-time f s = (\new -> s { fTime = new }) <$> f (fTime s)
-
-cursor  :: Lens' Mouse (V2 Double)
-cursor f s = (\new -> s { fCursor = new }) <$> f (fCursor s)
-
-buttons :: Lens' Mouse (Set MouseButton)
-buttons f s = (\new -> s { fButtons = new }) <$> f (fButtons s)
-
---------------------------------------------------------------------------------
-
--- | Promote a 'Bool' to an 'EitherT'
-insist :: Monad m => e -> Bool -> EitherT e m ()
-insist e False = left e
-insist _ True  = right ()
-
-
--- | Promote a 'Maybe' to an 'EitherT'
--- TODO | - Factor out
-explain :: Monad m => e -> Maybe a -> EitherT e m a
-explain e = maybe (left e) right
-
-
--- | Do nothing whatsoever
-pass :: Applicative f => f ()
-pass = pure ()
-
---------------------------------------------------------------------------------
-
--- TODO | - Factor out
-
--- |
-whileM :: Monad m => m Bool -> m a -> m ()
-whileM p act = p >>= \yes -> if yes then act >> whileM p act else pass
-
-
--- |
-untilM :: Monad m => m Bool -> m a -> m ()
-untilM p act = whileM (not <$> p) act
-
-
--- |
-iterateWhileM :: Monad m => (a -> m Bool) -> (a -> m a) -> a -> m a
-iterateWhileM p act x = p x >>= \yes -> if yes then act x >>= iterateWhileM p act else return x
-
-
--- |
-iterateUntilM :: Monad m => (a -> m Bool) -> (a -> m a) -> a -> m a
-iterateUntilM p act x = iterateWhileM (fmap not . p) act x
+-- *
+import Graphics.UIKit.Types
+import Graphics.UIKit.Lenses
 
 --------------------------------------------------------------------------------
 
@@ -299,23 +182,30 @@ onevent e = case e of
 run :: IO (Either String ()) -- EitherT String IO ()
 run = runEitherT $ do
   (win, channel) <- setup "UIKit" (V2 600 400)
-  (quad, tex, program) <- lift newQuad
+  program <- newShader' "assets/shaders/textured.vert" "assets/shaders/textured.frag"
+  lift (GL.currentProgram $= Just program)
+  quad <- lift newQuad
+
+  -- Texture
+  -- TODO | - Don't hard-code the texture
+  tex <- lift newTexture
+  lift $ setTexture tex
+  lift . uploadTexture $ drawing (V2 600 400)
+
   lift $ loop (win, quad, tex, program, channel)
-  where
-    loop :: (GLFW.Window, Descriptor, GL.TextureObject, GL.Program, MessageChannel) -> IO ()
-    loop app@(win, quad, tex, program, channel) = do
-      new <- processMessages channel (\old msg -> return old) app
-      render (win, V2 600 400, tex, program, quad)
-      GLFW.pollEvents
-      close <- GLFW.windowShouldClose win
-      unless close (loop new)
+
+
+-- |
+loop :: (GLFW.Window, VAODescriptor, GL.TextureObject, GL.Program, MessageChannel) -> IO ()
+loop app@(win, quad, tex, program, channel) = do
+  new <- processMessages channel (\old msg -> return old) app
+  render (win, V2 600 400, tex, program, quad)
+  GLFW.pollEvents
+  close <- GLFW.windowShouldClose win
+  unless close (loop new)
 
 
 -- Render ----------------------------------------------------------------------
-
--- |
-data Descriptor = Descriptor GL.VertexArrayObject GL.ArrayIndex GL.NumArrayIndices deriving (Eq, Show)
-
 
 -- |
 newTexture :: IO GL.TextureObject
@@ -341,120 +231,68 @@ bufferOffset = plusPtr nullPtr . fromIntegral
 
 
 -- |
---newVAO :: IO Descriptor
+newVAO :: IO GL.VertexArrayObject
+newVAO = do
+  vao <- GL.genObjectName
+  GL.bindVertexArrayObject $= Just vao
+  return vao
 
-{-
-newBuffer :: IO _
-newBuffer _ = do
+-- |
+-- TODO | - Find structured way of doing this (eg. type class, type family)
+--        - Consider EitherT
+newAttribute :: (V.Storable (v a), Foldable v) => GL.AttribLocation -> [v a] -> IO AttributeDescriptor
+newAttribute location vs = do
   buffer <- GL.genObjectName
   GL.bindBuffer GL.ArrayBuffer $= Just buffer
-  withArray vs $ \ptr -> GL.bufferData GL.ArrayBuffer $= (vBufferSize, ptr, GL.StaticDraw)
+  withArray vs $ \ptr -> GL.bufferData GL.ArrayBuffer $= (bufferSize, ptr, GL.StaticDraw)
 
-  let vFirstIndex = 0
-      vPosition  = GL.AttribLocation 0
-  GL.vertexAttribPointer vPosition $= (GL.ToFloat, GL.VertexArrayDescriptor 4 GL.Float 0 (bufferOffset vFirstIndex))
-  GL.vertexAttribArray vPosition $= GL.Enabled
-  return buffer
--}
+  GL.vertexAttribPointer location $= (GL.ToFloat, GL.VertexArrayDescriptor nComponents GL.Float 0 (bufferOffset firstIndex))
+  GL.vertexAttribArray location $= GL.Enabled
+  return $ AttributeDescriptor buffer bufferSize (fromIntegral nComponents)
+  where
+    firstIndex  = 0
+    bufferSize  = fromIntegral $ numVertices * maybe 0 sizeOf (listToMaybe vs) -- TODO | - Improve
+    nComponents = maybe 3 (fromIntegral . length) (listToMaybe vs) -- TODO | - Improve (don't hard-code default)
+    numVertices = length vs
 
 
 -- |
-newQuad :: IO (Descriptor, GL.TextureObject, GL.Program)
+newShader :: IO GL.Program
+newShader = loadShaders [
+  ShaderInfo GL.VertexShader (FileSource "assets/shaders/textured.vert"),
+  ShaderInfo GL.FragmentShader (FileSource "assets/shaders/textured.frag")]
+
+
+-- |
+newQuad :: IO VAODescriptor
 newQuad = do
-  
-  -- Assemble the shader program
-  program <- loadShaders [
-    ShaderInfo GL.VertexShader (FileSource "assets/shaders/textured.vert"),
-    ShaderInfo GL.FragmentShader (FileSource "assets/shaders/textured.frag")]
-  GL.currentProgram $= Just program
-
-  -- Create VAO
-  triangles <- GL.genObjectName
-  GL.bindVertexArrayObject $= Just triangles
-
-  -- Vertices
-  vertexBuffer <- GL.genObjectName
-  GL.bindBuffer GL.ArrayBuffer $= Just vertexBuffer
-  withArray vs $ \ptr -> GL.bufferData GL.ArrayBuffer $= (vBufferSize, ptr, GL.StaticDraw)
-
-  let vFirstIndex = 0
-      vPosition  = GL.AttribLocation 0
-  GL.vertexAttribPointer vPosition $= (GL.ToFloat, GL.VertexArrayDescriptor 4 GL.Float 0 (bufferOffset vFirstIndex))
-  GL.vertexAttribArray vPosition $= GL.Enabled
-
-  -- Texture coordinates
-  textureBuffer <- GL.genObjectName
-  GL.bindBuffer GL.ArrayBuffer $= Just textureBuffer
-  withArray uv $ \ptr -> GL.bufferData GL.ArrayBuffer $= (tBufferSize, ptr, GL.StaticDraw)
-  let tFirstIndex = 0
-      uvCoords = GL.AttribLocation 2
-  GL.vertexAttribPointer uvCoords $= (GL.ToFloat, GL.VertexArrayDescriptor 2 GL.Float 0 (bufferOffset tFirstIndex))
-  GL.vertexAttribArray uvCoords $= GL.Enabled
-  
-  -- Colour
-  textureBuffer <- GL.genObjectName
-  GL.bindBuffer GL.ArrayBuffer $= Just textureBuffer
-  withArray co $ \ptr -> GL.bufferData GL.ArrayBuffer $= (cBufferSize, ptr, GL.StaticDraw)
-  let cFirstIndex = 0
-      vColour = GL.AttribLocation 1
-  GL.vertexAttribPointer vColour $= (GL.ToFloat, GL.VertexArrayDescriptor 4 GL.Float 0 (bufferOffset cFirstIndex))
-  GL.vertexAttribArray vColour $= GL.Enabled
-
-  -- Texture
-  tex <- newTexture
-  putStrLn $ "tex object: " <> show tex
-  setTexture tex
-  loc <- GL.get (GL.uniformLocation program "tex")
-  GL.uniform loc $= (GL.TextureUnit 0)
-  putStrLn $ "Tex uniform: " <> show loc
-  --savePngImage "assets/out.png" (ImageRGBA8 drawing)
-  uploadTexture drawing
-
-  --GettableStateVar [(GLint, VariableType, String)]
-  mapM_ print =<< (GL.get $ GL.activeUniforms program)
-
-  -- Phew
-  return $ (Descriptor triangles vFirstIndex (fromIntegral numVertices), tex, program)
+  vao     <- newVAO
+  vBuffer <- newAttribute (GL.AttribLocation 0) vs -- TODO | - Do not hard-code location
+  tBuffer <- newAttribute (GL.AttribLocation 2) uv -- TODO | - Do not hard-code location
+  return $ VAODescriptor vao 0 (fromIntegral $ count (vBuffer :: AttributeDescriptor))
   where
-    vs          = concat . Geometry.triangles $ Geometry.planeXY (\x y z -> V4 x y z 1) 2 2 :: [V4 GL.GLfloat]
-    vBufferSize = fromIntegral $ numVertices * maybe 0 sizeOf (listToMaybe vs)
-    numVertices = length vs
-
-    co = concat . Geometry.triangles . zipWith const (cycle [V4 1 0 0 1, V4 0 1 0 1, V4 0 0 1 1]) $ Geometry.planeXY (\_ _ _ -> V4 0 0 0 0) 1 1 :: [V4 GL.GLfloat]
-    cBufferSize = fromIntegral $ numVertices * maybe 0 sizeOf (listToMaybe co)
-
     -- TODO | - Should probably add uv coords to cubist-sculptor
     uv = fmap (\(V4 x y _ _) -> pure 0.5 + V2 x y) vs :: [V2 GL.GLfloat] -- Texture coordinates
-    tBufferSize = fromIntegral $ numVertices * maybe 0 sizeOf (listToMaybe uv)
+    vs          = concat . Geometry.triangles $ Geometry.planeXY (\x y z -> V4 x y z 1) 2 2 :: [V4 GL.GLfloat]
 
----
-
-crashOnError = GL.get GL.errors >>= \es -> unless (null es) (print es >> error "OpenGL errors halted the process")
+--------------------------------------------------------------------------------
 
 -- | A sketch of how the rendering might work.
-render :: (GLFW.Window, V2 Int, GL.TextureObject, GL.Program, Descriptor) -> IO ()
-render (win, V2 cx cy, tex, program, Descriptor triangles firstIndex numVertices) = do
-  crashOnError
+render :: (GLFW.Window, V2 Int, GL.TextureObject, GL.Program, VAODescriptor) -> IO ()
+render (win, V2 cx cy, tex, program, VAODescriptor triangles firstIndex numVertices) = do
   GL.viewport   $= (GL.Position 0 0, GL.Size (fromIntegral cx) (fromIntegral cy))
   GL.clearColor $= GL.Color4 0 0 0 1
   GL.clear [GL.ColorBuffer]
-  -- TODO | - Set uniforms
-  
-  --with (distribute $ triangleTransformation t) $ \ptr ->
-  --  GL.glUniformMatrix4fv loc 1 0 (castPtr (ptr :: Ptr (M44 CFloat)))
-  crashOnError
-  setTexture tex
-  loc <- GL.get (GL.uniformLocation program "tex")
-  GL.uniform loc $= (GL.TextureUnit 0)
-  crashOnError
-  GL.bindVertexArrayObject $= Just triangles
-  crashOnError
-  GL.drawArrays GL.Triangles firstIndex numVertices
-  crashOnError
-  GLFW.swapBuffers win
-  crashOnError
 
-------
+  setTexture tex
+  --loc <- GL.get (GL.uniformLocation program "tex")
+  GL.uniform (GL.UniformLocation 0) $= (GL.TextureUnit 0) -- TODO | - Don't hard-code uniform location
+
+  GL.bindVertexArrayObject $= Just triangles
+  GL.drawArrays GL.Triangles firstIndex numVertices
+  GLFW.swapBuffers win
+
+--------------------------------------------------------------------------------
 
 data ShaderSource =
      ByteStringSource B.ByteString
@@ -472,53 +310,59 @@ getSource (FileSource path) = B.readFile path
 
 data ShaderInfo = ShaderInfo GL.ShaderType ShaderSource deriving ( Eq, Ord, Show )
 
-------
+--------------------------------------------------------------------------------
 
-loadShaders :: [ShaderInfo] -> IO GL.Program
-loadShaders infos = GL.createProgram `bracketOnError` GL.deleteObjectName $ \program -> do
-  loadCompileAttach program infos
-  linkAndCheck program
-  return program
+-- TODO | - Should we care about GL.deleteObjectName
 
-linkAndCheck :: GL.Program -> IO ()
-linkAndCheck = checked GL.linkProgram GL.linkStatus GL.programInfoLog "link"
+-- |
+newShader' :: FilePath -> FilePath -> EitherT String IO GL.Program
+newShader' vPath fPath = handleIO
+                           (left . show)                           
+                           (do program <- lift $ GL.createProgram
+                               vertex   <- shaderComponent program vPath GL.VertexShader
+                               fragment <- shaderComponent program fPath GL.FragmentShader
+                               link program)
+  --where
+    --tryCreateResource create delete f = bracketOnError create delete f
 
-loadCompileAttach :: GL.Program -> [ShaderInfo] -> IO ()
-loadCompileAttach _ [] = return ()
-loadCompileAttach program (ShaderInfo shType source : infos) =
-  GL.createShader shType `bracketOnError` GL.deleteObjectName $ \shader -> do
-      src <- getSource source
-      GL.shaderSourceBS shader $= src
-      compileAndCheck shader
-      GL.attachShader program shader
-      loadCompileAttach program infos
 
-compileAndCheck :: GL.Shader -> IO ()
-compileAndCheck = checked GL.compileShader GL.compileStatus GL.shaderInfoLog "compile"
-
-checked :: (t -> IO ())
-        -> (t -> GL.GettableStateVar Bool)
-        -> (t -> GL.GettableStateVar String)
-        -> String
-        -> t
-        -> IO ()
-checked action getStatus getInfoLog message object = do
-  action object
-  ok <- GL.get (getStatus object)
+-- |
+shaderComponent :: GL.Program -> FilePath -> GL.ShaderType -> EitherT String IO GL.Shader
+shaderComponent program path kind = do
+  shader <- lift (GL.createShader kind)
+  src <- lift (B.readFile path)
+  lift $ GL.shaderSourceBS shader $= src
+  lift $ GL.compileShader shader
+  ok <- lift $ GL.get (GL.compileStatus shader)
   unless ok $ do
-    infoLog <- GL.get (getInfoLog object)
-    fail (message <> " log: " <> infoLog)
+    log <- lift $ GL.get (GL.shaderInfoLog shader)
+    left log
+  lift $ GL.attachShader program shader
+  right shader
 
---------------
 
--- | Upload pixel data to texture object
---   Borrowed from SO
+-- |
+link :: GL.Program -> EitherT String IO GL.Program
+link program = do
+  lift $ GL.linkProgram program
+  ok <- lift $ GL.get (GL.linkStatus program)
+  unless ok $ do
+    log <- lift $ GL.get (GL.programInfoLog program)
+    left log
+  right program
+
+-- |
+--ensure :: _
+--ensure check log = do
+
+--------------------------------------------------------------------------------
+
+-- | Upload pixel data to texture object, for the first time (cf. also texSubImage2d)
+--   Make sure the right texture is bound at this point.
 -- TODO | - Rename (?)
--- GL.textureBinding GL.Texture2D $= Just tex
 uploadTexture :: Image PixelRGBA8 -> IO ()
 uploadTexture (Image width height dat) = do
   -- Access the data vector pointer
-  crashOnError
   V.unsafeWith dat $ \ptr ->
     GL.texImage2D -- Generate the texture
       GL.Texture2D
@@ -528,9 +372,20 @@ uploadTexture (Image width height dat) = do
       (GL.TextureSize2D (fromIntegral width) (fromIntegral height)) -- Size of the image
       0                               -- No borders
       (GL.PixelData GL.RGBA GL.UnsignedByte ptr) -- The pixel data: the vector contains Bytes, in RGBA order
-  crashOnError
 
---------------------
+
+-- |
+refreshTexture :: Image PixelRGBA8 -> IO ()
+refreshTexture (Image width height dat) = do
+  V.unsafeWith dat $ \ptr ->
+    GL.texSubImage2D
+      (GL.Texture2D)
+      (0)
+      (GL.TexturePosition2D 0 0)
+      (GL.TextureSize2D (fromIntegral width) (fromIntegral height))
+      (GL.PixelData GL.RGBA GL.UnsignedByte ptr)
+
+--------------------------------------------------------------------------------
 
 -- | Set texture coordinate wrapping options for both the 'S' and 'T'
 -- dimensions of a 2D texture.
@@ -539,14 +394,24 @@ texture2DWrap = GL.makeStateVar (GL.get (GL.textureWrapMode GL.Texture2D GL.S))
                              (forM_ [GL.S,GL.T] . aux)
   where aux x d = GL.textureWrapMode GL.Texture2D d $= x
 
---------------------
+--------------------------------------------------------------------------------
 
 -- |
-drawing :: Image PixelRGBA8
-drawing = Rasterific.renderDrawing 256 256 white
-        . Rasterific.withTexture (Rasterific.uniformTexture drawColor)
-        . Rasterific.fill
-        $ Rasterific.circle (V2 0 0) 140
+drawing :: V2 Int -> Image PixelRGBA8
+drawing (V2 dx dy) = renderDrawing dx dy white $ do
+                       withTexture (uniformTexture $ PixelRGBA8 0 0 0 255) $
+                         stroke 3 JoinRound (CapStraight 0, CapStraight 0) path
+                       withTexture (uniformTexture drawColor) $ do
+                         fill $ circle (V2 300 200) 140
+                         withPathOrientation path 0 $ do
+                             --printTextAt font (PointSize 24) (V2 0 0) "Text on path"
+                             forM_ [10, 20 .. 100] $ \r -> fill $ circle (V2 0 0) 10
+                             --fill $ rectangle (V2 0 0) 30 20
+                             --fill $ rectangle (V2 0 0) 10 20
+                             --fill $ rectangle (V2 0 0) 20 20
+                             --fill $ rectangle (V2 0 0) 20 50    
   where
     white = PixelRGBA8 255 255 255 255
     drawColor = PixelRGBA8 0 0x86 0xc1 255
+    path = Path (V2 100 180) False [PathCubicBezierCurveTo (V2 20 20) (V2 170 20) (V2 300 200)]
+
