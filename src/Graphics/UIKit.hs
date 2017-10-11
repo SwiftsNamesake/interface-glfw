@@ -168,6 +168,13 @@ processMessages channel dispatch app = do
 queuedMessages :: MessageChannel -> IO [SystemEvent]
 queuedMessages channel = atomically $ whileJust (tryReadTChan channel) return
 
+
+-- | Simple way of posting Animation events
+animate :: (SystemEvent -> IO ()) Int -> IO ()
+animate post fps = async . forever $ do
+  post Animate
+  threadDelay $ div (10^6) fps
+
 -- Events ----------------------------------------------------------------------
 
 -- | Updates the 'Input', given a 'SystemEvent'
@@ -193,60 +200,8 @@ data Scene = Scene {
   program :: GL.Program,
   font    :: Font,
   input   :: Input,
-  channel :: MessageChannel,
-  fSnake  :: Snake
+  channel :: MessageChannel
 }
-
-
-data Snake = Snake {
-  fBody    :: [V2 Int],
-  fHeading :: V2 Int,
-  fFruits  :: [V2 Int],
-  fBoardSize :: V2 Int
-}
-
------------------------------------------
-
-snake :: Lens' Scene Snake
-snake f s = (\new -> s { fSnake = new }) <$> f (fSnake s)
-
-body :: Lens' Snake [V2 Int]
-body f s = (\new -> s { fBody = new }) <$> f (fBody s)
-
-heading :: Lens' Snake (V2 Int)
-heading f s = (\new -> s { fHeading = new }) <$> f (fHeading s)
-
-fruits :: Lens' Snake [V2 Int]
-fruits f s = (\new -> s { fFruits = new }) <$> f (fFruits s)
-
------------------------------------------
-
-update :: SystemEvent -> Scene -> Scene
-update msg = case msg of
-  KeyDown Key'Left  -> snake.heading %~ turnLeft
-  KeyDown Key'Right -> snake.heading %~ turnRight
-  Tick              -> tick
-  _                 -> id
-  where
-    turnRight  = perp
-    turnLeft (V2 0  y') = V2 y'   0
-    turnLeft (V2 x' y') = V2 y' (-x')
-
-
-tick :: Scene -> Scene
-tick scene = scene & snake %~ eat
-  where
-    -- TODO | - Refactor
-    move _ [] = []
-    move d (h:b) = (h + d) : h : b
-
-    eat sn
-      | caughtFruit sn = sn & fruits %~ drop 1
-                            & body   %~ move (sn~>heading)
-      | otherwise = sn & body %~ init . move (sn~>heading)
-
-caughtFruit :: Snake -> Bool
-caughtFruit sn = sn~>fruits.to (take 1) == sn~>body.to (take 1)
 
 -----------------------------------------
 
@@ -258,7 +213,7 @@ run = runEitherT $ do
   program <- newShader "assets/shaders/textured.vert" "assets/shaders/textured.frag"
   lift (GL.currentProgram $= Just program)
 
-  quad <- lift newQuad
+  quad <- lift $ newQuad (V2 2 2)
   font <- EitherT $ Font.loadFontFile "assets/fonts/3Dumb.ttf"
 
   -- Texture
@@ -268,24 +223,9 @@ run = runEitherT $ do
 
   input <- lift $ initial win
   
-  g <- lift Random.getStdGen
+  let scene = Scene win quad tex program font input channel
 
-  let scene = Scene win quad tex program font input channel snake
-      -- TODO | - Cool pattern, factor out and refactor
-      stream g = let (rx, g')  = Random.randomR (0, 14) g
-                     (ry, g'') = Random.randomR (0, 14) g'
-                 in V2 rx ry : stream g''
-      snake = Snake {
-                fBody    = [V2 6 6],
-                fHeading = V2 1 0,
-                fFruits  = stream g,
-                fBoardSize = V2 (14+1) (14+1) }
   lift . uploadTexture $ drawing scene
-
-  lift . async . forever $ do
-    atomically . writeTChan channel $ Tick
-    threadDelay $ div (10^6) 8
-
   lift $ loop scene
 
 
@@ -331,6 +271,7 @@ newVAO = do
   GL.bindVertexArrayObject $= Just vao
   return vao
 
+
 -- |
 -- TODO | - Find structured way of doing this (eg. type class, type family)
 --        - Consider EitherT
@@ -351,8 +292,8 @@ newAttribute location vs = do
 
 
 -- |
-newQuad :: IO VAODescriptor
-newQuad = do
+newQuad :: V2 GL.GLfloat -> IO VAODescriptor
+newQuad (V2 dx dy) = do
   vao     <- newVAO
   vBuffer <- newAttribute (GL.AttribLocation 0) vs -- TODO | - Do not hard-code location
   tBuffer <- newAttribute (GL.AttribLocation 2) uv -- TODO | - Do not hard-code location
@@ -360,23 +301,22 @@ newQuad = do
   where
     -- TODO | - Should probably add uv coords to cubist-sculptor
     uv = fmap (\v -> pure 0.5 + fmap ((/2) . signum) (v~>_xy)) vs :: [V2 GL.GLfloat] -- Texture coordinates
-    vs          = concat . Geometry.triangles $ Geometry.planeXY (\x y z -> V4 x y z 1) 2 2 :: [V4 GL.GLfloat]
+    vs = concat . Geometry.triangles $ Geometry.planeXY (\x y z -> V4 x y z 1) dx dy :: [V4 GL.GLfloat]
 
 --------------------------------------------------------------------------------
 
 -- | A sketch of how the rendering might work.
-render :: Scene -> IO ()
-render scene = do
+render :: GL.TextureObject -> Image PixelRGBA8 -> IO ()
+render tex im = do
   let (V2 dx dy) = scene~>to input.to fFrameSize
   GL.viewport   $= (GL.Position 0 0, GL.Size (fromIntegral dx) (fromIntegral dy))
   GL.clearColor $= GL.Color4 0 0 0 1
   GL.clear [GL.ColorBuffer]
 
-  setTexture $ scene~>to texture
+  setTexture tex
   --loc <- GL.get (GL.uniformLocation program "tex")
   GL.uniform (GL.UniformLocation 0) $= (GL.TextureUnit 0) -- TODO | - Don't hard-code uniform location
-  (Just t) <- GLFW.getTime
-  uploadTexture $ drawing scene -- (V2 600 400) (realToFrac $ 10 + 20 * sin t)
+  refreshTexture im
 
   renderVAO $ scene~>to mesh
   GLFW.swapBuffers $ scene~>to window
@@ -474,32 +414,3 @@ texture2DWrap = GL.makeStateVar
   where aux x d = GL.textureWrapMode GL.Texture2D d $= x
 
 --------------------------------------------------------------------------------
-
--- |
-drawing :: Scene -> Image PixelRGBA8
-drawing scene = do
-  let (V2 dx dy) = scene~>to input.to fFrameSize
-  renderDrawing dx dy white $ do
-    --withTexture (uniformTexture $ PixelRGBA8 0 0 0 255) $
-    --  stroke 3 JoinRound (CapStraight 0, CapStraight 0) path
-    withTexture (uniformTexture drawColor) $ do
-      fill $ circle (scene~>to input.to fMouse.to fCursor.to (fmap realToFrac)) 60
-      printTextAt (scene~>to font) (PointSize 25) (V2 40 40) text
-      withPathOrientation path 0 $ do
-        forM_ [10, 12 .. 20] $ \r -> fill $ circle (V2 0 0) r
-    
-    let tileSz@(V2 dx dy) = V2 24 24
-        origin = V2 130 40
-        sz     = scene~>snake.to fBoardSize.to (fmap fromIntegral)
-  
-    withTexture (uniformTexture $ PixelRGBA8 255 0 0 255) $ do
-      stroke 4 JoinRound (CapRound, CapRound) $ rectangle origin (dx*sz~>x) (dy*sz~>y)
-    withTexture (uniformTexture $ PixelRGBA8 255 0 0 255) $ do
-      fill $ rectangle (origin + tileSz * (fromIntegral <$> (scene~>snake.fruits.to head))) dx dy
-      withTexture (uniformTexture $ PixelRGBA8 0 0 0 255) $ do
-        forM_ (scene~>snake.body.to (fmap (fmap fromIntegral))) $ \p -> fill $ rectangle (origin + V2 2 2 + tileSz * p) (dx - 4) (dy - 4)
-  where
-    text = let (V2 mx my) = scene~>to input.to fMouse.to fCursor in "The Mouse: " <> show mx <> " , " <> show my
-    white = PixelRGBA8 255 255 255 255
-    drawColor = PixelRGBA8 0 0x86 0xc1 255
-    path = Path (V2 100 180) False [PathCubicBezierCurveTo (V2 20 20) (V2 170 20) (V2 300 200)]

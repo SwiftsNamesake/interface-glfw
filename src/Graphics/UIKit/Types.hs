@@ -62,7 +62,7 @@ data SystemEvent = MouseMotion (V2 Double)
                  | MouseLeave
                  -- TODO | - Remove (just for testing)
                  --        - Or maybe expose animation event
-                 | Tick
+                 | Animate
                  deriving (Eq, Show)
 
 
