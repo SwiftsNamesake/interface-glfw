@@ -11,6 +11,7 @@
 -- TODO | - More powerful event churning (frp, elm, reactive) 
 --        - Start blog about programming and library work
 --        - Vulkan (?)
+--        - Refactor
 
 -- This package is intended to form the basis of an ecosystem of native Haskell
 -- UI components.
@@ -23,6 +24,7 @@
 
 {-# LANGUAGE RankNTypes            #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase            #-}
 
 -- API -------------------------------------------------------------------------
 
@@ -34,7 +36,8 @@ import           Data.AABB as AABB
 
 import           Data.Monoid ((<>))
 import           Data.Maybe
-import qualified Data.Vector.Storable as V
+import qualified Data.Vector.Storable as VS
+import           Data.Vector.Storable (Storable(..))
 import           Data.Foldable
 import qualified Data.Set as Set
 import           Data.Set (Set)
@@ -51,7 +54,7 @@ import Control.Monad
 import Control.Exception.Safe
 
 import Linear
-import Lens.Micro
+import Lens.Micro.Platform
 
 import System.Random as Random
 
@@ -59,10 +62,10 @@ import qualified Graphics.UI.GLFW as GLFW
 import           Graphics.UI.GLFW (MouseButton(..), Key(..), KeyState(..), MouseButtonState(..), CursorState(..))
 import qualified Graphics.Rendering.OpenGL as GL
 import           Graphics.Rendering.OpenGL (($=))
-import           Graphics.Rasterific as Rasterific
+import           Graphics.Rasterific as Rasterific hiding (Vector)
 import           Graphics.Rasterific.Texture as Rasterific
-import           Graphics.Text.TrueType as Font
-import qualified Graphics.Text.TrueType (Font(..))
+import qualified Graphics.Text.TrueType as Font
+import           Graphics.Text.TrueType (Font(..))
 
 import Codec.Picture (Image(..), PixelRGB8(..), PixelRGBA8(..), DynamicImage(..), savePngImage)
 
@@ -120,13 +123,14 @@ setupEvents win = do
   channel <- newTChanIO
   let put = atomically . writeTChan channel -- TODO | - Return this (?)
   
-  GLFW.setCursorPosCallback   win (Just $ \win mx my      -> put $ MouseMotion $ fmap realToFrac (V2 mx my))
-  GLFW.setCursorEnterCallback win (Just $ \win st         -> put $ makeFocus st)
-  GLFW.setMouseButtonCallback win (Just $ \win b st mod   -> put $ makeMouse b st mod)
-  GLFW.setKeyCallback         win (Just $ \win k r st mod -> put $ makeKey k r st mod)
-  GLFW.setDropCallback        win (Just $ \win fns        -> put $ FileDrop fns)
-  -- GLFW.setFramebufferSizeCallback win (Just $ \win dx dy -> put $ V2 _ _)
-  -- GLFW.setWindowSizeCallback  win (Just $ \win dx dy -> put $ V2 _ _)
+  GLFW.setCursorPosCallback       win (Just $ \win mx my      -> put . MouseMotion $ fmap realToFrac (V2 mx my))
+  GLFW.setCursorEnterCallback     win (Just $ \win st         -> put $ makeFocus st)
+  GLFW.setMouseButtonCallback     win (Just $ \win b st mod   -> put $ makeMouse b st mod)
+  GLFW.setKeyCallback             win (Just $ \win k r st mod -> put $ makeKey k r st mod)
+  GLFW.setDropCallback            win (Just $ \win fns        -> put $ FileDrop fns)
+  GLFW.setFramebufferSizeCallback win (Just $ \win dx dy      -> put . FrameResize  $ V2 dx dy)
+  GLFW.setWindowSizeCallback      win (Just $ \win dx dy      -> put . WindowResize $ V2 dx dy)
+  GLFW.setWindowPosCallback       win (Just $ \win px py      -> put . WindowMove   $ V2 px py)
   --GLFW.setErrorCallback $ Just (\err s -> _)
   -- setClipboardString, getClipboardString
   return channel
@@ -158,10 +162,10 @@ initial win = Input
 -- TODO | - How do we deal with repeat events (does it even matter)?
 --        - We'll probably want to replace this logic when we move on to proper FRP
 -- processMessages :: Input -> (Input -> s -> SystemEvent -> IO s) -> s -> IO s
-processMessages :: MessageChannel -> (app -> SystemEvent -> IO app) -> app -> IO app
+processMessages :: MessageChannel -> (SystemEvent -> app -> IO app) -> app -> IO app
 processMessages channel dispatch app = do
   messages <- queuedMessages channel
-  foldrM (\msg app -> dispatch app msg) app messages
+  foldrM dispatch app messages
 
 
 -- |
@@ -170,7 +174,7 @@ queuedMessages channel = atomically $ whileJust (tryReadTChan channel) return
 
 
 -- | Simple way of posting Animation events
-animate :: (SystemEvent -> IO ()) Int -> IO ()
+animate :: (SystemEvent -> IO ()) -> Int -> IO (Async ())
 animate post fps = async . forever $ do
   post Animate
   threadDelay $ div (10^6) fps
@@ -178,7 +182,7 @@ animate post fps = async . forever $ do
 -- Events ----------------------------------------------------------------------
 
 -- | Updates the 'Input', given a 'SystemEvent'
--- TODO | - 
+-- TODO | - Rename to reflect exactly what this function does (?)
 onevent :: SystemEvent -> Input -> Input
 onevent e = case e of
   MouseMotion pos  -> mouse.cursor .~ pos
@@ -187,6 +191,9 @@ onevent e = case e of
   MouseDown b      -> mouse.buttons %~ Set.insert b
   MouseUp b        -> mouse.buttons %~ Set.delete b
   MouseScroll δ    -> scroll %~ (+ δ)
+  FrameResize   p  -> frameSize       .~ p -- TODO | - Make sure this is correct
+  WindowResize  p  -> windowRect.size .~ p -- TODO | - Make sure this is correct
+  WindowMove    p  -> windowRect.lo   .~ p -- TODO | - Make sure this is correct
   WindowClosing    -> id -- TODO | - Should 'Input' record the this (?)
   _                -> id
 
@@ -199,15 +206,15 @@ data Scene = Scene {
   texture :: GL.TextureObject,
   program :: GL.Program,
   font    :: Font,
-  input   :: Input,
+  --input   :: Input,
   channel :: MessageChannel
 }
 
 -----------------------------------------
 
 -- | 
-run :: IO (Either String ()) -- EitherT String IO ()
-run = runEitherT $ do
+runApplication :: (Scene -> app -> Image PixelRGBA8) -> (SystemEvent -> app -> app) -> (Input -> app) -> IO (Either String ()) -- EitherT String IO ()
+runApplication draw update makeApp = runEitherT $ do
   (win, channel) <- setup "UIKit" (V2 600 400)
   
   program <- newShader "assets/shaders/textured.vert" "assets/shaders/textured.frag"
@@ -223,25 +230,28 @@ run = runEitherT $ do
 
   input <- lift $ initial win
   
-  let scene = Scene win quad tex program font input channel
+  let scene = Scene win quad tex program font channel
+      app   = makeApp input
 
-  lift . uploadTexture $ drawing scene
-  lift $ loop scene
+  lift . uploadTexture $ draw scene app
+  lift $ loop scene draw update app
 
 
 -- |
-loop :: Scene -> IO ()
-loop scene = do
-  new <- processMessages (scene~>to channel) (\old msg -> return . update msg $ old { input = onevent msg (input old) }) scene
-  render scene
+loop :: Scene -> (Scene -> app -> Image PixelRGBA8) -> (SystemEvent -> app -> app) -> app -> IO ()
+loop scene draw update app = do
+  new <- processMessages (scene~>to channel) (\msg old -> return $ update msg old) app
+  render scene $ draw scene new
   GLFW.pollEvents
   close <- GLFW.windowShouldClose $ scene~>to window
-  unless close $ loop new
+  unless close $ loop scene draw update new
 
+--------------------------------------------------------------------------------
 
 -- Render ----------------------------------------------------------------------
 
--- |
+-- | Creates a 'TextureObject', binds and enables it, and sets the filtering and wrapping
+--   properties to reasonble defaults.
 newTexture :: IO GL.TextureObject
 newTexture = do
   tex <- GL.genObjectName
@@ -251,7 +261,7 @@ newTexture = do
   return tex
 
 
--- |
+-- | Enables and binds a 'TextureObject' to a unit.
 setTexture :: GL.TextureObject -> IO ()
 setTexture tex = do
   GL.texture GL.Texture2D $= GL.Enabled
@@ -264,7 +274,7 @@ bufferOffset :: Integral a => a -> Ptr b
 bufferOffset = plusPtr nullPtr . fromIntegral
 
 
--- |
+-- | Creates and binds a 'VertexArrayObject'
 newVAO :: IO GL.VertexArrayObject
 newVAO = do
   vao <- GL.genObjectName
@@ -275,7 +285,7 @@ newVAO = do
 -- |
 -- TODO | - Find structured way of doing this (eg. type class, type family)
 --        - Consider EitherT
-newAttribute :: (V.Storable (v a), Foldable v) => GL.AttribLocation -> [v a] -> IO AttributeDescriptor
+newAttribute :: (Storable (v a), Foldable v) => GL.AttribLocation -> [v a] -> IO AttributeDescriptor
 newAttribute location vs = do
   buffer <- GL.genObjectName
   GL.bindBuffer GL.ArrayBuffer $= Just buffer
@@ -306,17 +316,18 @@ newQuad (V2 dx dy) = do
 --------------------------------------------------------------------------------
 
 -- | A sketch of how the rendering might work.
-render :: GL.TextureObject -> Image PixelRGBA8 -> IO ()
-render tex im = do
-  let (V2 dx dy) = scene~>to input.to fFrameSize
+render :: Scene -> Image PixelRGBA8 -> IO ()
+render scene im = do
+  --let (V2 dx dy) = scene~>to input.frameSize
+  -- TODO | - Figoure out of to deal with 'Input'
+  (V2 dx dy) <- frameBounds (scene~>to window)
   GL.viewport   $= (GL.Position 0 0, GL.Size (fromIntegral dx) (fromIntegral dy))
   GL.clearColor $= GL.Color4 0 0 0 1
   GL.clear [GL.ColorBuffer]
 
-  setTexture tex
-  --loc <- GL.get (GL.uniformLocation program "tex")
-  GL.uniform (GL.UniformLocation 0) $= (GL.TextureUnit 0) -- TODO | - Don't hard-code uniform location
-  refreshTexture im
+  setTexture $ scene~>to texture
+  GL.uniform (GL.UniformLocation 0) $= (GL.TextureUnit 0) -- TODO | - Don't hard-code uniform location (IMPORTANT!)
+  refreshTexture $ im
 
   renderVAO $ scene~>to mesh
   GLFW.swapBuffers $ scene~>to window
@@ -380,21 +391,21 @@ link program = do
 uploadTexture :: Image PixelRGBA8 -> IO ()
 uploadTexture (Image width height dat) = do
   -- Access the data vector pointer
-  V.unsafeWith dat $ \ptr ->
+  VS.unsafeWith dat $ \ptr ->
     GL.texImage2D    -- Generate the texture
       (GL.Texture2D) --
       (GL.NoProxy)   -- No proxy
       (0)            -- No mipmaps
       (GL.RGBA8)     -- Internal storage format: use R8G8B8A8 as internal storage
       (GL.TextureSize2D (fromIntegral width) (fromIntegral height)) -- Size of the image
-      (0)                               -- No borders
+      (0)                                        -- No borders
       (GL.PixelData GL.RGBA GL.UnsignedByte ptr) -- The pixel data: the vector contains Bytes, in RGBA order
 
 
 -- |
 refreshTexture :: Image PixelRGBA8 -> IO ()
 refreshTexture (Image width height dat) = do
-  V.unsafeWith dat $ \ptr ->
+  VS.unsafeWith dat $ \ptr ->
     GL.texSubImage2D
       (GL.Texture2D)
       (0)
@@ -412,5 +423,11 @@ texture2DWrap = GL.makeStateVar
                   (GL.get (GL.textureWrapMode GL.Texture2D GL.S))
                   (forM_ [GL.S,GL.T] . aux)
   where aux x d = GL.textureWrapMode GL.Texture2D d $= x
+
+--------------------------------------------------------------------------------
+
+-- | 
+aabb :: AABB V2 Float -> [Primitive]
+aabb bounds = rectangle (bounds~>lo) (bounds~>size.x) (bounds~>size.y)
 
 --------------------------------------------------------------------------------

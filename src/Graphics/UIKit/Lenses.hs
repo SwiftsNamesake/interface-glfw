@@ -26,7 +26,8 @@ module Graphics.UIKit.Lenses where
 import Data.Set (Set)
 
 -- *
-import Lens.Micro
+import Lens.Micro.Platform
+--import Lens.Micro.TH as TH
 import Linear
 
 -- *

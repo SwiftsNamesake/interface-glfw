@@ -58,6 +58,10 @@ data SystemEvent = MouseMotion (V2 Double)
                  | FileDrop    [String]
                  -- | FileChanged () -- TODO: Fix
                  | WindowClosing
+                 | WindowMove   (V2 Int) -- (AABB V2 Int)
+                 | WindowResize (V2 Int)  -- TODO | - AABB or V2?
+                 | FrameResize  (V2 Int)  -- TODO | - AABB or V2?
+                                          --        - Rename ('frame' refers to the drawable client area)
                  | MouseEnter
                  | MouseLeave
                  -- TODO | - Remove (just for testing)
@@ -82,7 +86,7 @@ data Input = Input {
   fKeyboard     :: Set Key,
   fTime         :: Double -- Current time (updated on each `tick`)
   --fMessages     :: MessageChannel
-} -- deriving (Show)
+} deriving (Show)
 
 
 -- |
