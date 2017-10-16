@@ -19,6 +19,7 @@ library
                      , Graphics.UIKit.Types
                      , Graphics.UIKit.Lenses
                      , Control.Loops
+                     , Data.Chroma
   build-depends:       base >= 4.7 && < 5
                      , either
                      , vector
@@ -48,6 +49,23 @@ executable tic-tac-toe
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   build-depends:       base
                      , vector
+                     , containers
+                     , linear
+                     , microlens-platform
+                     , JuicyPixels
+                     , FontyFruity
+                     , Rasterific
+                     , GLFW-b
+                     , linear-aabb
+                     , interface-glfw
+  default-language:    Haskell2010
+
+executable chess
+  hs-source-dirs:      app
+  main-is:             Chess.hs
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  build-depends:       base
+                     , containers
                      , linear
                      , microlens-platform
                      , JuicyPixels

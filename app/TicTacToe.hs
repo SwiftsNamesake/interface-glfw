@@ -36,6 +36,8 @@ import           Data.Maybe
 import           Data.Monoid
 import           Data.Foldable
 
+import Text.Printf
+
 import Linear
 import Lens.Micro.Platform
 
@@ -56,6 +58,7 @@ import Data.AABB as AABB
 
 -- *
 import Control.Loops
+import Data.Chroma as Chroma
 
 -- *
 import Graphics.UIKit.Types
@@ -137,15 +140,33 @@ unlessOccupied f s@Nothing = const s <$> f s
 unlessOccupied f s         = f s
 
 
+-- | Focuses on the tile whose turn it is
+-- TODO | - Rename (?)
+current :: SimpleGetter TicTacToe Tile
+current = turns.to head
+
+
+-- | The number of moves that 'tile' has made
+nmoves :: Tile -> SimpleGetter TicTacToe Int
+nmoves tile = to $ \game -> countBy (== Just tile) (game~>board)
+
+
 -- |
+-- TODO | - Factor out
+countBy :: Foldable t => (a -> Bool) -> t a -> Int
+countBy f = foldr (\x c -> c + fromEnum (f x)) 0
+
+
+-- | 
 -- TODO | - This will break if we add more dimensions
 consecutives :: Int -> [[V2 Int]]
 consecutives s = horizontals <> verticals <> diagonals
   where
-    horizontals = fmap (\y -> [V2 x y | x <- [0 .. s-1]]) [0 .. s-1]
-    verticals   = fmap (\x -> [V2 x y | y <- [0 .. s-1]]) [0 .. s-1]
-    diagonals = [[V2 (xy)     xy | xy <- [0 .. s-1]],
-                 [V2 (s-1-xy) xy | xy <- [0 .. s-1]]]
+    hi = s-1
+    horizontals = fmap (\y -> [V2 x y | x <- [0 .. hi]]) [0 .. hi]
+    verticals   = fmap (\x -> [V2 x y | y <- [0 .. hi]]) [0 .. hi]
+    diagonals = [[V2 (xy)    xy | xy <- [0 .. hi]],
+                 [V2 (hi-xy) xy | xy <- [0 .. hi]]]
 
 
 -- |
@@ -230,6 +251,7 @@ applyOutcome game o@(PlacedTile st tile pos) = game & history %~ (o:)
 
 -- | Play the game. Save the world.
 update :: SystemEvent -> TicTacToe -> TicTacToe
+update (KeyDown Key'Space) game          = newGame (game~>input) 3
 update ev game@((~>status) -> Impasse)   = game
 update ev game@((~>status) -> Ended c m) = game
 update ev game = case ev of
@@ -240,36 +262,57 @@ update ev game = case ev of
 
 --------------------------------------------------------------------------------
 
+--class UIComponent a where
+--  renderUI :: a -> Drawing PixelRGBA8 ()
+--  boundsUI :: a -> AABB V2 Int
+
+data UIComponent = UIComponent {
+  renderUI :: UIComponent -> Drawing PixelRGBA8 (),
+  boundsUI :: AABB V2 Int
+}
+
+--------------------------------------------------------------------------------
+
 -- |
+-- TODO | - Don't re-render tiles or text (cf. highlighted, etc.)
+--        - 
 drawing :: Scene -> TicTacToe -> Drawing PixelRGBA8 ()
 drawing scene game = case (game~>status) of
-    Ongoing       -> renderAllTiles >> renderAllLabels >> renderPendingChoice >> ongoingUI
+    Ongoing       -> renderAllTiles >> renderAllLabels >> solid (PixelRGBA8 20 140 240 255) renderPendingChoice >> ongoingUI
     Ended won row -> renderAllTiles >> renderWinningTiles row >> renderAllLabels >> winningUI won row
     Impasse       -> impasseUI
   where
-    winningUI won row = pass
+    -- TODO | - I should really finish up 'Interpolate'
+    winningUI won row = solid green $ anchoredText (scene~>to font) (96) (PointSize 32) (winMessage won row) (pure 0.5) frameCentre
     ongoingUI = pass
-    impasseUI = solid black $ anchoredText (scene~>to font) (96) (PointSize 48) ("I M P A S S E") (pure 0.5) (game~>input.frameSize.asFloat.centre)
-    renderPendingChoice = let mpos = find (inside cursorOnCanvas . bounds) (positions $ game~>side)
-                              colour = PixelRGBA8 20 140 240 255
-                          in maybe pass (solid colour . tileLabel $ maybe (game~>turns.to head.to Just) Just) mpos
+    impasseUI = solid black $ anchoredText (scene~>to font) (96) (PointSize 48) ("I M P A S S E") (pure 0.5) frameCentre
+    renderPendingChoice = maybe pass (\(pos, tile) -> tileLabel (const $ Just tile) pos) findPendingChoice
 
-    renderAllTiles  = solid (PixelRGBA8 50 100 200 255) . void $ mapM tileFill (positions (game~>side))
-    renderAllLabels = solid (PixelRGBA8 40 40 40 255) $ mapM_ (tileLabel id) (positions (game~>side))
+    winMessage won _ = printf "%s won after %d moves" (show won) (game~>nmoves won)
+
+    findPendingChoice :: Maybe (V2 Int, Tile)
+    findPendingChoice = do pos  <- find (inside cursorOnCanvas . bounds) (positions $ game~>side)
+                           tile <- maybe (game~>current.to Just) (const Nothing) (game~>tileAt pos)
+                           return (pos, tile)
+
+    renderAllTiles  = solid (PixelRGBA8 50 100 200 255) . void $ mapM tileFill (positions $ game~>side)
+    renderAllLabels = solid (PixelRGBA8 40 40 40 255) $ mapM_ (tileLabel $ \pos -> game~>tileAt pos) (positions (game~>side))
     renderWinningTiles row = solid (PixelRGBA8 183 240 183 255) . void $ mapM tileFill row
+    
+    solid c = withTexture (uniformTexture c)
+    
     bounds = tileBounds (game~>layout)
     tileFill  pos = fill $ aabb (bounds pos)
     tileLabel f pos = let label  = pure . tileChar
-                          mtile  = game~>tileAt pos
+                          mtile  = f pos
                           box    = bounds pos
                           anchor = V2 0.5 0.5
                           p      = (box~>lo) + (box~>size)*(V2 0.5 0.5)
-                      in maybe pass (\tile -> anchoredText (scene~>to font) 96 (PointSize 54) (label tile) anchor p) (f mtile)
-    solid c = withTexture (uniformTexture c)
+                      in maybe pass (\tile -> anchoredText (scene~>to font) 96 (PointSize 54) (label tile) anchor p) mtile
+    
     cursorOnCanvas = game~>input.mouse.cursor.to (fmap realToFrac)
+    frameCentre    = game~>input.frameSize.asFloat.to (* pure 0.5)
     asFloat = to (fmap fromIntegral)
-    black = PixelRGBA8   0   0   0 255
-    white = PixelRGBA8 255 255 255 255
 
 --------------------------------------------------------------------------------
 
@@ -282,12 +325,12 @@ drawing scene game = case (game~>status) of
 --        - Factor out
 --        - Baseline height (?)
 anchoredTo :: Font -> Dpi -> PointSize -> String -> V2 Float -> V2 Float -> V2 Float
-anchoredTo font dpi pt s anchor p = let box = stringBounds font dpi pt s in p - anchor * (box~>size)
+anchoredTo font dpi pt s anchor p = let box = stringBounds font dpi pt s in p - anchor * (box~>size) {- SW to NW, TODO | - More general solution -} + V2 0 (box~>size.y)
 
 
 -- |
 anchoredText :: Font -> Dpi -> PointSize -> String -> V2 Float -> V2 Float -> Drawing px ()
-anchoredText font dpi pt s anchor p = let lo = anchoredTo font dpi pt s anchor p in printTextAt font pt lo s >> fill (circle lo 20)
+anchoredText font dpi pt s anchor p = let lo = anchoredTo font dpi pt s anchor p in printTextAt font pt lo s
 
 
 -- |
@@ -302,23 +345,26 @@ stringBounds font dpi pt = toCartesianBox . Font.stringBoundingBox font dpi pt
 --------------------------------------------------------------------------------
 
 -- |
-runTicTacToe = runApplication
-                 (\scene game -> let (V2 dx dy) = game^.input.frameSize in renderDrawing dx dy (PixelRGBA8 255 255 255 255) $ drawing scene game)
-                 (\msg old -> update msg $ old { fInput = onevent msg (old~>input) })
-                 (\initial -> TicTacToe {
-                                fBoard = V.replicate (sideLength^2) Nothing,
-                                fSide  = sideLength,
-                                fTurns = cycle [Nought, Cross],
-                                fHistory = [],
-                                fStatus  = Ongoing,
-                                fInput = initial,
-                                fLayout = BoardLayout {
+newGame :: Input -> Int -> TicTacToe
+newGame initial sideLength = TicTacToe {
+                               fBoard   = V.replicate (sideLength^2) Nothing,
+                               fSide    = sideLength,
+                               fTurns   = cycle [Nought, Cross],
+                               fHistory = [],
+                               fStatus  = Ongoing,
+                               fInput   = initial,
+                               fLayout  = BoardLayout {
                                             fOrigin   = V2 20 20,
                                             fTileSize = V2 105 105,
                                             fPadding  = V2 6 6,
-                                            fSide     = sideLength } })
-  where
-    sideLength = 3
+                                            fSide     = sideLength } }
+
+
+-- |
+runTicTacToe = runApplication
+                 (\scene game -> let (V2 dx dy) = game^.input.frameSize in renderDrawing dx dy Chroma.white $ drawing scene game)
+                 (\msg old -> update msg $ old { fInput = onevent msg (old~>input) })
+                 (\initial -> newGame initial 3)
 
 
 -- |

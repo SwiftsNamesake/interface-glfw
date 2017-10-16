@@ -12,6 +12,8 @@
 --        - Start blog about programming and library work
 --        - Vulkan (?)
 --        - Refactor
+--        - Distribution, packing, patching
+--        - Rendering system, compositing, multithreading, resizing textures, framebuffers
 
 -- This package is intended to form the basis of an ecosystem of native Haskell
 -- UI components.
