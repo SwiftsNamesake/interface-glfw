@@ -215,9 +215,14 @@ data Scene = Scene {
 -----------------------------------------
 
 -- | 
-runApplication :: (Scene -> app -> Image PixelRGBA8) -> (SystemEvent -> app -> app) -> (Input -> app) -> IO (Either String ()) -- EitherT String IO ()
-runApplication draw update makeApp = runEitherT $ do
-  (win, channel) <- setup "UIKit" (V2 600 400)
+runApplication :: String
+               -> V2 Int
+               -> (Scene -> app -> Image PixelRGBA8)
+               -> (SystemEvent -> app -> app)
+               -> (Input -> app)
+               -> IO (Either String ())
+runApplication wtitle wsize draw update makeApp = runEitherT $ do
+  (win, channel) <- setup wtitle wsize
   
   program <- newShader "assets/shaders/textured.vert" "assets/shaders/textured.frag"
   lift (GL.currentProgram $= Just program)

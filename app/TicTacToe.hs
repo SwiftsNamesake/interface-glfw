@@ -262,6 +262,8 @@ update ev game = case ev of
 
 --------------------------------------------------------------------------------
 
+-- * Experimenting with declarative and extensible layouts
+
 --class UIComponent a where
 --  renderUI :: a -> Drawing PixelRGBA8 ()
 --  boundsUI :: a -> AABB V2 Int
@@ -361,7 +363,10 @@ newGame initial sideLength = TicTacToe {
 
 
 -- |
+runTicTacToe :: IO (Either String ())
 runTicTacToe = runApplication
+                 ("Almost Chess")
+                 (V2 450 450)
                  (\scene game -> let (V2 dx dy) = game^.input.frameSize in renderDrawing dx dy Chroma.white $ drawing scene game)
                  (\msg old -> update msg $ old { fInput = onevent msg (old~>input) })
                  (\initial -> newGame initial 3)
