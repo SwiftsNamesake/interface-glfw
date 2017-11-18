@@ -16,11 +16,14 @@ cabal-version:       >=1.10
 library
   hs-source-dirs:      src
   exposed-modules:     Graphics.UIKit
+                     , Graphics.UIKit.Assets
                      , Graphics.UIKit.Types
                      , Graphics.UIKit.Lenses
                      , Control.Loops
                      , Data.Chroma
   build-depends:       base >= 4.7 && < 5
+                     , file-embed
+                     , template-haskell
                      , either
                      , vector
                      , text

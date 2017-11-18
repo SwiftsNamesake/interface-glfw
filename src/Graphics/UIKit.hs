@@ -28,6 +28,7 @@
 {-# LANGUAGE RankNTypes            #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase            #-}
+{-# LANGUAGE TemplateHaskell       #-}
 
 -- API -------------------------------------------------------------------------
 
@@ -85,6 +86,7 @@ import Control.Loops
 -- *
 import Graphics.UIKit.Types
 import Graphics.UIKit.Lenses
+import Graphics.UIKit.Assets as Assets
 
 --------------------------------------------------------------------------------
 
@@ -224,11 +226,11 @@ runApplication :: String
 runApplication wtitle wsize draw update makeApp = runEitherT $ do
   (win, channel) <- setup wtitle wsize
   
-  program <- newShader "assets/shaders/textured.vert" "assets/shaders/textured.frag"
+  program <- defaultShader
   lift (GL.currentProgram $= Just program)
 
   quad <- lift $ newQuad (V2 2 2)
-  font <- EitherT $ Font.loadFontFile "assets/fonts/3Dumb.ttf"
+  font <- EitherT $ Font.loadFontFile $(robustPath "assets/fonts/3Dumb.ttf")
 
   -- Texture
   -- TODO | - Don't hard-code the texture
@@ -352,21 +354,34 @@ renderVAO (VAODescriptor triangles firstIndex numVertices) = do
 -- TODO | - Should we care about GL.deleteObjectName
 
 -- |
-newShader :: FilePath -> FilePath -> EitherT String IO GL.Program
-newShader vPath fPath = handleIO
-                          (left . show)                           
-                          (do program <- lift $ GL.createProgram
-                              vertex   <- shaderComponent program vPath GL.VertexShader
-                              fragment <- shaderComponent program fPath GL.FragmentShader
-                              link program)
-
+defaultShader :: EitherT String IO GL.Program
+defaultShader = newShader $(Assets.embed "assets/shaders/textured.vert") $(Assets.embed "assets/shaders/textured.frag")
+-- $(robustPath "assets/shaders/textured.vert") $(robustPath "assets/shaders/textured.frag")
 
 -- |
-shaderComponent :: GL.Program -> FilePath -> GL.ShaderType -> EitherT String IO GL.Shader
-shaderComponent program path kind = do
+loadShader :: FilePath -> FilePath -> EitherT String IO GL.Program
+loadShader vPath fPath = do
+  vSrc <- load vPath
+  fSrc <- load fPath
+  newShader vSrc fSrc
+  where
+    load = EitherT . fmap Right . B.readFile
+  --newShader <$> EitherT (Right <$> B.readFile vPath) <*> EitherT (Right <$> B.readFile fPath)
+
+-- |
+newShader :: B.ByteString -> B.ByteString -> EitherT String IO GL.Program
+newShader vSrc fSrc = handleIO
+                        (left . show)                           
+                        (do program <- lift $ GL.createProgram
+                            vertex   <- shaderComponent program vSrc GL.VertexShader
+                            fragment <- shaderComponent program fSrc GL.FragmentShader
+                            link program)
+
+-- |
+shaderComponent :: GL.Program -> B.ByteString -> GL.ShaderType -> EitherT String IO GL.Shader
+shaderComponent program src kind = do
   (ok, shader) <- lift $ do
     shader <- GL.createShader kind
-    src <- B.readFile path
     GL.shaderSourceBS shader $= src
     GL.compileShader shader
     ok <- GL.get $ GL.compileStatus shader
