@@ -14,6 +14,7 @@
 --        - Refactor
 --        - Distribution, packing, patching
 --        - Rendering system, compositing, multithreading, resizing textures, framebuffers
+--        - Layout engine (eg. grid layout)
 
 -- This package is intended to form the basis of an ecosystem of native Haskell
 -- UI components.
@@ -60,14 +61,14 @@ import Lens.Micro.Platform
 
 import System.Random as Random
 
-import qualified Graphics.UI.GLFW as GLFW
-import           Graphics.UI.GLFW (MouseButton(..), Key(..), KeyState(..), MouseButtonState(..), CursorState(..))
-import qualified Graphics.Rendering.OpenGL as GL
-import           Graphics.Rendering.OpenGL (($=))
-import           Graphics.Rasterific as Rasterific hiding (Vector)
+import qualified Graphics.UI.GLFW            as GLFW
+import           Graphics.UI.GLFW            (MouseButton(..), Key(..), KeyState(..), MouseButtonState(..), CursorState(..))
+import qualified Graphics.Rendering.OpenGL   as GL
+import           Graphics.Rendering.OpenGL   (($=))
+import           Graphics.Rasterific         as Rasterific hiding (Vector)
 import           Graphics.Rasterific.Texture as Rasterific
-import qualified Graphics.Text.TrueType as Font
-import           Graphics.Text.TrueType (Font(..))
+import qualified Graphics.Text.TrueType      as Font
+import           Graphics.Text.TrueType      (Font(..), Dpi(..), BoundingBox(..))
 
 import Codec.Picture (Image(..), PixelRGB8(..), PixelRGBA8(..), DynamicImage(..), savePngImage)
 
@@ -159,7 +160,6 @@ initial win = Input
                 <*> pure Set.empty
                 <*> (GLFW.getTime >>= \(Just t) -> pure t)
 
-
 -- |
 -- TODO | - How do we deal with repeat events (does it even matter)?
 --        - We'll probably want to replace this logic when we move on to proper FRP
@@ -219,7 +219,7 @@ runApplication :: String
                -> V2 Int
                -> (Scene -> app -> Image PixelRGBA8)
                -> (SystemEvent -> app -> app)
-               -> (Input -> app)
+               -> (Input -> EitherT String IO app)
                -> IO (Either String ())
 runApplication wtitle wsize draw update makeApp = runEitherT $ do
   (win, channel) <- setup wtitle wsize
@@ -238,7 +238,8 @@ runApplication wtitle wsize draw update makeApp = runEitherT $ do
   input <- lift $ initial win
   
   let scene = Scene win quad tex program font channel
-      app   = makeApp input
+  
+  app <- makeApp input
 
   lift . uploadTexture $ draw scene app
   lift $ loop scene draw update app
@@ -438,3 +439,30 @@ aabb :: AABB V2 Float -> [Primitive]
 aabb bounds = rectangle (bounds~>lo) (bounds~>size.x) (bounds~>size.y)
 
 --------------------------------------------------------------------------------
+
+-- * Borrowed from Pixels
+
+-- TODO | - Factor out
+
+-- |
+-- TODO | - Sort out the terminology, rename parameters
+--        - Factor out
+--        - Baseline height (?)
+--        - Retrun AABB instead (?)
+anchoredTo :: Font -> Dpi -> PointSize -> String -> V2 Float -> V2 Float -> V2 Float
+anchoredTo font dpi pt s anchor p = let box = stringBounds font dpi pt s in p - anchor * (box~>size) {- SW to NW, TODO | - More general solution -}-- + V2 0 (box~>size.y)
+
+-- |
+--anchoredTo :: Font -> Dpi -> PointSize -> String -> V2 Float -> V2 Float -> V2 Float
+
+-- |
+anchoredText :: Font -> Dpi -> PointSize -> String -> V2 Float -> V2 Float -> Drawing px ()
+anchoredText font dpi pt s anchor p = let lo = anchoredTo font dpi pt s anchor p in printTextAt font pt lo s
+
+-- |
+toAABB :: BoundingBox -> AABB V2 Float
+toAABB box@(BoundingBox x₀ y₀ x₁ y₁ _) = AABB (V2 x₀ y₀) (V2 x₁ y₁)
+
+-- |
+stringBounds :: Font -> Dpi -> PointSize -> String -> AABB V2 Float
+stringBounds font dpi pt = toAABB . Font.stringBoundingBox font dpi pt

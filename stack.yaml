@@ -37,9 +37,20 @@ resolver: lts-9.6
 # will not be run. This is useful for tweaking upstream packages.
 packages:
 - .
-- location: C:/Users/Jonatan/Desktop/Haskell/modules/cubist-sculptor
-- location: C:/Users/Jonatan/Desktop/Haskell/modules/Leibniz
-- location: C:/Users/Jonatan/Desktop/Haskell/modules/linear-aabb
+#- location: C:/Users/Jonatan/Desktop/Haskell/modules/cubist-sculptor
+#- location: C:/Users/Jonatan/Desktop/Haskell/modules/Leibniz
+#- location: C:/Users/Jonatan/Desktop/Haskell/modules/linear-aabb
+- location:
+    git: https://github.com/SwiftsNamesake/cubist-sculptor.git
+    commit: 6fa9a194c0f6be30d31a88ee7fbb73fe95dfcd6a
+  extra-dep: true
+- location:
+    git: https://github.com/SwiftsNamesake/Leibniz.git
+    commit: 3662828ac7c94af791b75cf762c7dac1e1ab0e66
+  extra-dep: true
+- location:
+    git: https://github.com/SwiftsNamesake/linear-aabb.git
+    commit: cdffe00f9b9f3fd97ae6627cee700b82fb06cd09
   extra-dep: true
 # Dependency packages to be pulled from upstream that are not in the resolver
 # (e.g., acme-missiles-0.3)

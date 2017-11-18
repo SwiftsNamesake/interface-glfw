@@ -43,6 +43,7 @@ import Lens.Micro.Platform
 
 -- *
 import Control.Monad
+import Control.Monad.Trans.Either
 
 -- *
 import           Graphics.Rasterific         as Rasterific hiding (Vector)
@@ -126,36 +127,30 @@ data BoardLayout = BoardLayout {
 makeLensesWith abbreviatedFields ''TicTacToe
 makeLensesWith abbreviatedFields ''BoardLayout
 
-
 -- |
 -- TODO | - Turn into prism (deal with out-of-bounds)
 --        - Converting a position to a linear index can sometimes hide out-of-bonds errors
 tileAt :: V2 Int -> Lens' TicTacToe (Maybe Tile)
 tileAt pos f s = let i = toIndex (s~>side) pos in (\new -> s & board.ix i .~ new) <$> f (join $ fBoard s !? i)
 
-
 -- | Let's not undo previous moves. The game would take forever.
 unlessOccupied :: Lens' (Maybe Tile) (Maybe Tile)
 unlessOccupied f s@Nothing = const s <$> f s
 unlessOccupied f s         = f s
-
 
 -- | Focuses on the tile whose turn it is
 -- TODO | - Rename (?)
 current :: SimpleGetter TicTacToe Tile
 current = turns.to head
 
-
 -- | The number of moves that 'tile' has made
 nmoves :: Tile -> SimpleGetter TicTacToe Int
 nmoves tile = to $ \game -> countBy (== Just tile) (game~>board)
-
 
 -- |
 -- TODO | - Factor out
 countBy :: Foldable t => (a -> Bool) -> t a -> Int
 countBy f = foldr (\x c -> c + fromEnum (f x)) 0
-
 
 -- | 
 -- TODO | - This will break if we add more dimensions
@@ -168,30 +163,33 @@ consecutives s = horizontals <> verticals <> diagonals
     diagonals = [[V2 (xy)    xy | xy <- [0 .. hi]],
                  [V2 (hi-xy) xy | xy <- [0 .. hi]]]
 
+-- |
+findWinningRow :: TicTacToe -> Tile -> Maybe [V2 Int]
+findWinningRow game current = find (isWinningRow game current) (consecutives $ game~>side)
+
+-- |
+isWinningRow :: TicTacToe -> Tile -> [V2 Int] -> Bool
+isWinningRow game current = all (\p -> (== Just current) $ game~>tileAt p)
 
 -- |
 tileChar :: Tile -> Char
 tileChar Nought = 'O'
 tileChar Cross  = 'X'
 
-
 -- |
 opponent :: Tile -> Tile
 opponent Nought = Cross
 opponent Cross  = Nought
-
 
 -- | The (V2 col row) position of each tile, ordered by the index of each position.
 -- TODO | - Current logic will break if we ever generalise to other dimensions
 positions :: Int -> [V2 Int]
 positions s = [V2 col row | row <- [0 .. (s-1)], col <- [0 .. (s-1)]]
 
-
 -- |
 -- TODO | - Rename
 tileLayout :: BoardLayout -> [AABB V2 Float]
 tileLayout layout = fmap (tileBounds layout) (positions $ layout~>side)
-
 
 -- |
 -- TODO | - Out-of-bounds
@@ -200,7 +198,6 @@ tileBounds layout pos = let sz = layout~>tileSize
                             or = layout~>origin
                             lo = or + (sz + layout~>padding) * (fromIntegral <$> pos)
                         in AABB lo (lo + sz)
-
 
 -- | Transforms a coordinate in screen space to a position on the board.
 -- TODO | - Refactor
@@ -217,11 +214,9 @@ toBoardPosition layout coord
     boardSize = padded * pure (layout~>side.to fromIntegral) - (layout~>padding)
     between n a b = (a <= n) && (n <= b)
 
-
 -- | Transforms a position on the board into a linear index.
 toIndex :: Int -> V2 Int -> Int
 toIndex s (V2 px py) = px + s * py
-
 
 -- |
 tryPlace :: TicTacToe -> V2 Int -> Outcome
@@ -231,14 +226,11 @@ tryPlace game pos
   where
     here = join $ (game~>board) !? toIndex (game~>side) pos
     current = game~>turns.to head
+    lookAhead = game & tileAt pos .~ Just current
     status
-      -- NOTE | - The board goes out of sync for a short while, the status logic has to 'look ahead' by inserting the new value
-      -- TODO | - Refactor
-      | all isJust ((game & tileAt pos .~ Just current)~>board) = Impasse
-      | otherwise                = case find (all (\p -> (== Just current) $ (game & tileAt pos .~ Just current)~>tileAt p)) (consecutives $ game~>side) of
-                                     Just match -> Ended current match
-                                     Nothing    -> Ongoing
-
+      | Just match <- findWinningRow game current = Ended current match
+      | all isJust (lookAhead~>board)             = Impasse
+      | otherwise                                 = Ongoing
 
 -- |
 applyOutcome :: TicTacToe -> Outcome -> TicTacToe
@@ -247,7 +239,6 @@ applyOutcome game o@(PlacedTile st tile pos) = game & history %~ (o:)
                                                     & turns %~ drop 1
                                                     & status .~ st
                                                     & board.ix (toIndex (game~>side) pos) .~ Just tile
-
 
 -- | Play the game. Save the world.
 update :: SystemEvent -> TicTacToe -> TicTacToe
@@ -309,40 +300,12 @@ drawing scene game = case (game~>status) of
                           mtile  = f pos
                           box    = bounds pos
                           anchor = V2 0.5 0.5
-                          p      = (box~>lo) + (box~>size)*(V2 0.5 0.5)
+                          p      = (box~>centre)
                       in maybe pass (\tile -> anchoredText (scene~>to font) 96 (PointSize 54) (label tile) anchor p) mtile
     
     cursorOnCanvas = game~>input.mouse.cursor.to (fmap realToFrac)
     frameCentre    = game~>input.frameSize.asFloat.to (* pure 0.5)
     asFloat = to (fmap fromIntegral)
-
---------------------------------------------------------------------------------
-
--- * Borrowed from Pixels
-
--- TODO | - Factor out
-
--- |
--- TODO | - Sort out the terminology, rename parameters
---        - Factor out
---        - Baseline height (?)
-anchoredTo :: Font -> Dpi -> PointSize -> String -> V2 Float -> V2 Float -> V2 Float
-anchoredTo font dpi pt s anchor p = let box = stringBounds font dpi pt s in p - anchor * (box~>size) {- SW to NW, TODO | - More general solution -} + V2 0 (box~>size.y)
-
-
--- |
-anchoredText :: Font -> Dpi -> PointSize -> String -> V2 Float -> V2 Float -> Drawing px ()
-anchoredText font dpi pt s anchor p = let lo = anchoredTo font dpi pt s anchor p in printTextAt font pt lo s
-
-
--- |
-toCartesianBox :: BoundingBox -> AABB V2 Float
-toCartesianBox box@(BoundingBox x₀ y₀ x₁ y₁ _) = AABB (V2 x₀ y₀) (V2 x₁ y₁)
-
-
--- |
-stringBounds :: Font -> Dpi -> PointSize -> String -> AABB V2 Float
-stringBounds font dpi pt = toCartesianBox . Font.stringBoundingBox font dpi pt
 
 --------------------------------------------------------------------------------
 
@@ -361,7 +324,6 @@ newGame initial sideLength = TicTacToe {
                                             fPadding  = V2 6 6,
                                             fSide     = sideLength } }
 
-
 -- |
 runTicTacToe :: IO (Either String ())
 runTicTacToe = runApplication
@@ -369,8 +331,7 @@ runTicTacToe = runApplication
                  (V2 450 450)
                  (\scene game -> let (V2 dx dy) = game^.input.frameSize in renderDrawing dx dy Chroma.white $ drawing scene game)
                  (\msg old -> update msg $ old { fInput = onevent msg (old~>input) })
-                 (\initial -> newGame initial 3)
-
+                 (\initial -> pure $ newGame initial 3)
 
 -- |
 main :: IO ()

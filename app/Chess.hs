@@ -30,7 +30,9 @@ module Main where
 import           Data.Monoid
 import qualified Data.Map.Strict as Map
 import           Data.Map.Strict (Map)
+import           Data.Maybe (isJust)
 
+import Control.Monad.Trans.Either
 import Control.Monad
 
 -- *
@@ -44,6 +46,8 @@ import           Graphics.Text.TrueType (Font(..), Dpi(..), BoundingBox(..))
 import           Graphics.UI.GLFW (MouseButton(..), Key(..), KeyState(..), MouseButtonState(..), CursorState(..))
 
 import Codec.Picture (Image(..), PixelRGB8(..), PixelRGBA8(..), DynamicImage(..), savePngImage)
+
+import Wuss
 
 -- *
 import Data.AABB as AABB
@@ -79,14 +83,15 @@ data ChessLayout = ChessLayout {
   fTileSize :: V2 Float,
   fTilePad  :: V2 Float,
   fOrigin   :: V2 Float
-} deriving (Eq, Show)
-
--- |
+} deriving (Show)
+  
+  -- |
 data ChessGame = ChessGame {
   fBoard  :: ChessBoard,
   fTurns  :: [ChessColour],
   fLayout :: ChessLayout,
-  fInput  :: Input
+  fInput  :: Input,
+  fPieceFont :: Font
 }
 
 --------------------------------------------------------------------------------
@@ -136,6 +141,30 @@ showBoard board = unlines . reverse $ fmap (fmap $ lookupGlyph board) positions
 
 --------------------------------------------------------------------------------
 
+-- | Finds every possible move for a given 'ChessPiece', relative to the current
+--   position.
+--   TODO | - Generate 'paths' ()
+{- moves :: V2 Int -> ChessPiece -> [V2 Int]
+moves pos piece = case piece of
+  Pawn   -> _
+  Knight -> _
+  Bishop -> _
+  Rook   -> _
+  Queen  -> _
+  King   -> _
+  Pawn   -> _
+  Knight -> _
+  Bishop -> _
+  Rook   -> _
+  Queen  -> _
+  King   -> _ -}
+
+--------------------------------------------------------------------------------
+
+-- |
+pieceAt :: ChessBoard -> V2 Index -> Maybe ChessPiece
+pieceAt (ChessBoard board) pos = Map.lookup pos board
+
 -- |
 fromGlyph :: Char -> Maybe ChessPiece
 fromGlyph '♟' = Just $ ChessPiece Pawn   White
@@ -150,7 +179,7 @@ fromGlyph '♗' = Just $ ChessPiece Bishop Black
 fromGlyph '♖' = Just $ ChessPiece Rook   Black
 fromGlyph '♕' = Just $ ChessPiece Queen  Black
 fromGlyph '♔' = Just $ ChessPiece King   Black
-fromGlyph _ = Nothing
+fromGlyph _    = Nothing
 
 -- |
 toGlyph :: ChessPiece -> Char
@@ -170,37 +199,66 @@ toGlyph (ChessPiece King   Black) = '♔'
 --------------------------------------------------------------------------------
 
 -- |
-tileBounds :: ChessLayout -> V2 Int -> AABB V2 Float
+tileBounds :: ChessLayout -> V2 Index -> AABB V2 Float
 tileBounds layout pos = let o   = layout~>origin
-                            off = fmap fromIntegral pos * (layout~>tileSize + layout~>tilePad)
+                            off = fmap (fromIntegral . fromEnum) pos * (layout~>tileSize + layout~>tilePad)
                             sz  = layout~>tileSize
                         in AABB.fromCornerSize (o + off) sz
 
 -- |
 tilesLayout :: ChessLayout -> [AABB V2 Float]
-tilesLayout layout = fmap (tileBounds layout . fmap fromEnum) (mconcat positions)
+tilesLayout layout = fmap (tileBounds layout) (mconcat positions)
 
 --------------------------------------------------------------------------------
 
 -- |
 renderChess :: Scene -> ChessGame -> Image PixelRGBA8
 renderChess scene game = renderDrawing (game~>input.frameSize.x) (game~>input.frameSize.y) Chroma.white $ do
-  solid (rgb 50 100 200) . void $ mapM (fill . aabb) (tilesLayout $ game~>layout)
+  solid (rgb  50 100 200) . void $ mapM (fill . aabb) (tilesLayout $ game~>layout)
+  --solid (rgb 255 255 255) . void $ mapM (\pos -> printTextAt (game~>pieceFont) pt (tileBounds (game~>layout) pos~>lo) (glyphAt pos)) (mconcat positions)
+  --solid (rgb 0 0 0) . mapM_ (stroke 1 JoinRound (CapRound,CapRound) . aabb . tileBounds (game~>layout))
+  mapM_ renderPiece . filter (isJust . pieceAt (game~>board)) $ mconcat positions
   where
+    --chequer|(s,ed)
+    dpi = 96
+    pt  = PointSize 20
+
+    glyphAt = pure . maybe ' ' toGlyph . pieceAt (game~>board)
+    textbox pos = let lo = anchoredTo (game~>pieceFont) dpi pt glyph (V2 0.5 0.5) (tileBounds (game~>layout) pos~>centre)
+                      glyph = glyphAt pos
+                      box   = stringBounds (game~>pieceFont) dpi pt $ glyph
+                  in box & position %~ (+ (lo + 2 - (box~>height.to (V2 (2)))))
+
+    renderPiece pos = let box    = tileBounds (game~>layout) pos
+                          font   = game~>pieceFont
+                          bounds = let b = stringBounds font dpi pt text in b & position %~ (+ ((box~>lo) - (b~>height.to (V2 0))))
+                          text   = glyphAt pos
+                      in do solid (rgb 0 0 0) $ printTextAt font pt (box~>lo) text
+                            solid (rgb 0 0 0) . line $ aabb bounds
+
     rgb r g b = PixelRGBA8 r g b maxBound
     solid c = withTexture (uniformTexture c)
+    line = stroke 1 JoinRound (CapRound,CapRound)
+    drawGlyphAt pos = anchoredText
+                        (game~>pieceFont)
+                        (dpi)
+                        (pt)
+                        (glyphAt pos)
+                        (V2 0.5 0.5)
+                        (tileBounds (game~>layout) pos~>centre)
 
 -- |
 updateChess :: SystemEvent -> ChessGame -> ChessGame
 updateChess _ game = game
 
 -- |
-newChess :: Input -> ChessGame
-newChess initial = ChessGame {
-                     fBoard  = formation,
-                     fTurns  = cycle [White, Black],
-                     fLayout = ChessLayout { fTileSize = V2 35 35, fTilePad = V2 3 3, fOrigin = V2 15 15 },
-                     fInput  = initial }
+newChess :: Input -> EitherT String IO ChessGame
+newChess initial = ChessGame
+                     <$> pure (formation)
+                     <*> pure (cycle [White, Black])
+                     <*> pure (ChessLayout { fTileSize = V2 50 50, fTilePad = V2 4 4, fOrigin = V2 15 15 })
+                     <*> pure (initial)
+                     <*> (EitherT $ Font.loadFontFile "assets/fonts/ARIALUNI.TTF")
 
 --------------------------------------------------------------------------------
 
@@ -208,7 +266,7 @@ newChess initial = ChessGame {
 runChess :: IO (Either String ())
 runChess = runApplication
              ("Chess")
-             (V2 450 450)
+             (V2 650 650)
              (\scene game -> renderChess scene game)
              (\msg old    -> updateChess msg old)
              (\initial    -> newChess initial)
