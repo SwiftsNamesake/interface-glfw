@@ -1,8 +1,11 @@
-#version 430 core
+//#version 430 core
+#version 130
 
-layout(location = 0) in vec4 vPosition;
+//layout(location = 0) in vec4 vPosition;
 //layout(location = 1) in vec4 vColour;
-layout(location = 2) in vec2 uvCoords;
+//layout(location = 2) in vec2 uvCoords;
+in vec4 vPosition;
+in vec2 uvCoords;
 
 // Output data ; will be interpolated for each fragment.
 out vec2 uv;

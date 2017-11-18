@@ -229,7 +229,7 @@ runApplication wtitle wsize draw update makeApp = runEitherT $ do
   program <- defaultShader
   lift (GL.currentProgram $= Just program)
 
-  quad <- lift $ newQuad (V2 2 2)
+  quad <- lift $ newQuad program (V2 2 2)
   font <- EitherT $ Font.loadFontFile $(robustPath "assets/fonts/3Dumb.ttf")
 
   -- Texture
@@ -294,10 +294,12 @@ newVAO = do
 
 -- |
 -- TODO | - Find structured way of doing this (eg. type class, type family)
---        - Consider EitherT
-newAttribute :: (Storable (v a), Foldable v) => GL.AttribLocation -> [v a] -> IO AttributeDescriptor
-newAttribute location vs = do
-  buffer <- GL.genObjectName
+--        - Consider EitherT (or some other way of dealing with errors)
+--newAttribute :: (Storable (v a), Foldable v) => GL.AttribLocation -> [v a] -> IO AttributeDescriptor
+newAttribute :: (Storable (v a), Foldable v) => GL.Program -> String -> [v a] -> IO AttributeDescriptor
+newAttribute program locationName vs = do
+  location <- GL.get $ GL.attribLocation program locationName
+  buffer   <- GL.genObjectName
   GL.bindBuffer GL.ArrayBuffer $= Just buffer
   withArray vs $ \ptr -> GL.bufferData GL.ArrayBuffer $= (bufferSize, ptr, GL.StaticDraw)
 
@@ -312,11 +314,11 @@ newAttribute location vs = do
 
 
 -- |
-newQuad :: V2 GL.GLfloat -> IO VAODescriptor
-newQuad (V2 dx dy) = do
+newQuad :: GL.Program -> V2 GL.GLfloat -> IO VAODescriptor
+newQuad program (V2 dx dy) = do
   vao     <- newVAO
-  vBuffer <- newAttribute (GL.AttribLocation 0) vs -- TODO | - Do not hard-code location
-  tBuffer <- newAttribute (GL.AttribLocation 2) uv -- TODO | - Do not hard-code location
+  vBuffer <- newAttribute program ("vPosition") vs -- TODO | - Do not hard-code location
+  tBuffer <- newAttribute program ("uvCoords")  uv -- TODO | - Do not hard-code location
   return $ VAODescriptor vao 0 (fromIntegral $ count (vBuffer :: AttributeDescriptor))
   where
     -- TODO | - Should probably add uv coords to cubist-sculptor
@@ -354,6 +356,8 @@ renderVAO (VAODescriptor triangles firstIndex numVertices) = do
 -- TODO | - Should we care about GL.deleteObjectName
 
 -- |
+-- TODO | - This needs to be much more robust
+--        - Use 'Alternative' or feature detection to choose an appropriate shader
 defaultShader :: EitherT String IO GL.Program
 defaultShader = newShader $(Assets.embed "assets/shaders/textured.vert") $(Assets.embed "assets/shaders/textured.frag")
 -- $(robustPath "assets/shaders/textured.vert") $(robustPath "assets/shaders/textured.frag")
