@@ -264,12 +264,13 @@ newChess initial = ChessGame
 
 -- |
 runChess :: IO (Either String ())
-runChess = runApplication
-             ("Chess")
-             (V2 650 650)
-             (\scene game -> renderChess scene game)
-             (\msg old    -> updateChess msg old)
-             (\initial    -> newChess initial)
+runChess = run $ Application {
+  title  = ("Chess"),
+  size   = (V2 650 650),
+  draw   = (\scene game -> renderChess scene game),
+  update = (\msg old    -> updateChess msg old),
+  initialise = (\_ initial -> newChess initial)
+}
 
 -- |
 main :: IO ()

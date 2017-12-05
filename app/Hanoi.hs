@@ -18,18 +18,20 @@ module Main where
 -- We'll need these ------------------------------------------------------------
 
 -- *
-import Graphics.UIKit as UI
+import Graphics.UIKit as UIKit
 
 -- Definitions -----------------------------------------------------------------
 
 -- |
-main :: IO ()
-main = runHanoi
-
+runHanoi :: IO ()
+runHanoi = UIKit.run $ Application {
+  title  = "Towers of Hanoi",
+  size   = V2 200 200,
+  draw   = \scene game -> renderHanoi,
+  update = \msg old    -> updateHanoi,
+  initialise = \initial -> newHanoi _
+}
 
 -- |
-runHanoi :: IO ()
-runHanoi = runApplication
-  (\scene game -> renderHanoi)
-  (\msg old    -> updateHanoi)
-  (\initial    -> newHanoi _)
+main :: IO ()
+main = runHanoi

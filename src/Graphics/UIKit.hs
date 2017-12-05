@@ -36,7 +36,8 @@ module Graphics.UIKit where
   
 -- We'll need these ------------------------------------------------------------
 
-import           Data.AABB as AABB
+import qualified Data.AABB as AABB
+import           Data.AABB (AABB(..))
 
 import           Data.Monoid ((<>))
 import           Data.Maybe
@@ -104,7 +105,6 @@ windowBounds win = AABB.fromCornerSize
                      <$> vectorise (GLFW.getWindowPos win)
                      <*> vectorise (GLFW.getWindowSize win)
 
-
 -- |
 -- TODO | - Rename (?)
 frameBounds :: GLFW.Window -> IO (V2 Int)
@@ -120,7 +120,6 @@ setup title (V2 dx dy) = do
   lift . GLFW.makeContextCurrent $ Just win
   ch <- lift $ setupEvents win
   return (win, ch)
-
 
 -- |
 setupEvents :: GLFW.Window -> IO MessageChannel
@@ -150,7 +149,6 @@ setupEvents win = do
     makeKey k _ (KeyState'Released)  mods = KeyUp k
     makeKey k _ (KeyState'Repeating) mods = KeyRepeat k
 
-
 -- |
 -- TODO | - Rename (?)
 initial :: GLFW.Window -> IO Input
@@ -166,16 +164,16 @@ initial win = Input
 -- TODO | - How do we deal with repeat events (does it even matter)?
 --        - We'll probably want to replace this logic when we move on to proper FRP
 -- processMessages :: Input -> (Input -> s -> SystemEvent -> IO s) -> s -> IO s
-processMessages :: MessageChannel -> (SystemEvent -> app -> IO app) -> app -> IO app
+--processMessages :: MessageChannel -> (SystemEvent -> app -> IO app) -> app -> IO app
+processMessages :: TChan message -> (message -> result -> IO result) -> result -> IO result
 processMessages channel dispatch app = do
   messages <- queuedMessages channel
   foldrM dispatch app messages
 
-
 -- |
-queuedMessages :: MessageChannel -> IO [SystemEvent]
+--queuedMessages :: MessageChannel -> IO [SystemEvent]
+queuedMessages :: TChan message -> IO [message]
 queuedMessages channel = atomically $ whileJust (tryReadTChan channel) return
-
 
 -- | Simple way of posting Animation events
 animate :: (SystemEvent -> IO ()) -> Int -> IO (Async ())
@@ -196,41 +194,55 @@ onevent e = case e of
   MouseUp b        -> mouse.buttons %~ Set.delete b
   MouseScroll δ    -> scroll %~ (+ δ)
   FrameResize   p  -> frameSize       .~ p -- TODO | - Make sure this is correct
-  WindowResize  p  -> windowRect.size .~ p -- TODO | - Make sure this is correct
-  WindowMove    p  -> windowRect.lo   .~ p -- TODO | - Make sure this is correct
+  WindowResize  p  -> windowRect.AABB.size .~ p -- TODO | - Make sure this is correct
+  WindowMove    p  -> windowRect.AABB.lo   .~ p -- TODO | - Make sure this is correct
   WindowClosing    -> id -- TODO | - Should 'Input' record the this (?)
   _                -> id
 
 ---------------------
 
 -- | Temporary scene type
+-- TODO | - Move
+--        - Either rename, or change the role of this type
 data Scene = Scene {
   window  :: GLFW.Window,
   mesh    :: VAODescriptor,
   texture :: GL.TextureObject,
   program :: GL.Program,
-  font    :: Font,
+  --font    :: Font,
   --input   :: Input,
-  channel :: MessageChannel
+  channel :: MessageChannel, -- TODO | - Rename (eg. events, event channel, messages, etc.)
+  effects :: EffectsChannel
 }
 
 -----------------------------------------
 
+-- |
+-- TODO | - Provide some way of running effects (currently, this is only possible during initialisation)
+--        - Factor out (if we decide to keep this type)
+data Application self = Application {
+  title  :: String,
+  size   :: V2 Int,
+  draw   :: Scene -> self -> Image PixelRGBA8,
+  update :: SystemEvent -> self -> self,
+  initialise :: Scene -> Input -> EitherT String IO self
+} -- deriving (Show)
+
 -- | 
-runApplication :: String
-               -> V2 Int
-               -> (Scene -> app -> Image PixelRGBA8)
-               -> (SystemEvent -> app -> app)
-               -> (Input -> EitherT String IO app)
-               -> IO (Either String ())
-runApplication wtitle wsize draw update makeApp = runEitherT $ do
-  (win, channel) <- setup wtitle wsize
+-- TODO | - Create type for the app definition (rather than having several separate parameters)
+--        - Return EitherT instead (?)
+--        - Provide more flexible ways of assembling an application (for now, we could just expose the internals of this library)
+--        - Return some meaningful result (eg. 'self')
+run :: Application self -> IO (Either String ())
+run application = runEitherT $ do
+  (win, channel) <- setup (application~>to title) (application~>to size)
   
   program <- defaultShader
   lift (GL.currentProgram $= Just program)
 
   quad <- lift $ newQuad program (V2 2 2)
-  font <- EitherT $ Font.loadFontFile $(robustPath "assets/fonts/3Dumb.ttf")
+  -- TODO | - We should probably get rid of this (font) eventually.
+  --font <- EitherT $ Font.loadFontFile $(robustPath "assets/fonts/3Dumb.ttf")
 
   -- Texture
   -- TODO | - Don't hard-code the texture
@@ -239,22 +251,27 @@ runApplication wtitle wsize draw update makeApp = runEitherT $ do
 
   input <- lift $ initial win
   
-  let scene = Scene win quad tex program font channel
+  effects <- lift newTChanIO
+
+  let scene = Scene win quad tex program channel effects
   
-  app <- makeApp input
+  appState <- (application~>to initialise) scene input
 
-  lift . uploadTexture $ draw scene app
-  lift $ loop scene draw update app
-
+  lift . uploadTexture $ (application~>to draw) scene appState
+  --lift $ loop scene draw update app
+  lift $ loop scene application appState
 
 -- |
-loop :: Scene -> (Scene -> app -> Image PixelRGBA8) -> (SystemEvent -> app -> app) -> app -> IO ()
-loop scene draw update app = do
-  new <- processMessages (scene~>to channel) (\msg old -> return $ update msg old) app
-  render scene $ draw scene new
+--loop :: Scene -> (Scene -> app -> Image PixelRGBA8) -> (SystemEvent -> app -> app) -> app -> IO ()
+--loop scene draw update app = do
+loop :: Scene -> Application self -> self -> IO ()
+loop scene application appState = do
+  newState <- processMessages (scene~>to channel) (\msg old -> return $ (application~>to update) msg old) appState
+  --_        <- queuedMessages (scene~>to effects) >>= sequence --processMessages (scene~>to effects) (_)
+  render scene $ (application~>to draw) scene newState
   GLFW.pollEvents
   close <- GLFW.windowShouldClose $ scene~>to window
-  unless close $ loop scene draw update new
+  unless close $ loop scene application newState
 
 --------------------------------------------------------------------------------
 
@@ -270,7 +287,6 @@ newTexture = do
   texture2DWrap $= (GL.Repeated, GL.ClampToEdge)
   return tex
 
-
 -- | Enables and binds a 'TextureObject' to a unit.
 setTexture :: GL.TextureObject -> IO ()
 setTexture tex = do
@@ -278,11 +294,9 @@ setTexture tex = do
   GL.activeTexture $= GL.TextureUnit 0
   GL.textureBinding GL.Texture2D $= Just tex
 
-
 -- |
 bufferOffset :: Integral a => a -> Ptr b
 bufferOffset = plusPtr nullPtr . fromIntegral
-
 
 -- | Creates and binds a 'VertexArrayObject'
 newVAO :: IO GL.VertexArrayObject
@@ -290,7 +304,6 @@ newVAO = do
   vao <- GL.genObjectName
   GL.bindVertexArrayObject $= Just vao
   return vao
-
 
 -- |
 -- TODO | - Find structured way of doing this (eg. type class, type family)
@@ -311,7 +324,6 @@ newAttribute program locationName vs = do
     bufferSize  = fromIntegral $ numVertices * maybe 0 sizeOf (listToMaybe vs) -- TODO | - Improve
     nComponents = maybe 3 (fromIntegral . length) (listToMaybe vs) -- TODO | - Improve (don't hard-code default)
     numVertices = length vs
-
 
 -- |
 newQuad :: GL.Program -> V2 GL.GLfloat -> IO VAODescriptor
@@ -343,7 +355,6 @@ render scene im = do
 
   renderVAO $ scene~>to mesh
   GLFW.swapBuffers $ scene~>to window
-
 
 -- |
 renderVAO :: VAODescriptor -> IO ()
@@ -394,7 +405,6 @@ shaderComponent program src kind = do
   lift $ GL.attachShader program shader
   right shader
 
-
 -- |
 link :: GL.Program -> EitherT String IO GL.Program
 link program = do
@@ -404,7 +414,6 @@ link program = do
     log <- lift $ GL.get (GL.programInfoLog program)
     left log
   right program
-
 
 -- |
 --ensure :: _
@@ -427,7 +436,6 @@ uploadTexture (Image width height dat) = do
       (GL.TextureSize2D (fromIntegral width) (fromIntegral height)) -- Size of the image
       (0)                                        -- No borders
       (GL.PixelData GL.RGBA GL.UnsignedByte ptr) -- The pixel data: the vector contains Bytes, in RGBA order
-
 
 -- |
 refreshTexture :: Image PixelRGBA8 -> IO ()
@@ -455,7 +463,7 @@ texture2DWrap = GL.makeStateVar
 
 -- | 
 aabb :: AABB V2 Float -> [Primitive]
-aabb bounds = rectangle (bounds~>lo) (bounds~>size.x) (bounds~>size.y)
+aabb bounds = rectangle (bounds~>AABB.lo) (bounds~>AABB.size.AABB.x) (bounds~>AABB.size.AABB.y)
 
 --------------------------------------------------------------------------------
 
@@ -469,7 +477,7 @@ aabb bounds = rectangle (bounds~>lo) (bounds~>size.x) (bounds~>size.y)
 --        - Baseline height (?)
 --        - Retrun AABB instead (?)
 anchoredTo :: Font -> Dpi -> PointSize -> String -> V2 Float -> V2 Float -> V2 Float
-anchoredTo font dpi pt s anchor p = let box = stringBounds font dpi pt s in p - anchor * (box~>size) {- SW to NW, TODO | - More general solution -}-- + V2 0 (box~>size.y)
+anchoredTo font dpi pt s anchor p = let box = stringBounds font dpi pt s in p - anchor * (box~>AABB.size) {- SW to NW, TODO | - More general solution -}-- + V2 0 (box~>size.y)
 
 -- |
 --anchoredTo :: Font -> Dpi -> PointSize -> String -> V2 Float -> V2 Float -> V2 Float

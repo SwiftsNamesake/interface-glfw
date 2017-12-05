@@ -29,9 +29,9 @@ module Main where
 
 -- We'll need these ------------------------------------------------------------
 
-import qualified Data.Vector          as V
-import           Data.Vector          (Vector, (!?))
-import           Data.Fixed (mod', div')
+import qualified Data.Vector as V
+import           Data.Vector (Vector, (!?))
+import           Data.Fixed  (mod', div')
 import           Data.Maybe
 import           Data.Monoid
 import           Data.Foldable
@@ -74,19 +74,16 @@ import Graphics.UIKit
 -- |
 data Tile = Nought | Cross deriving (Eq, Show, Bounded, Enum)
 
-
 -- |
 data Outcome = AlreadyOccupied (V2 Int)
              | PlacedTile GameStatus Tile (V2 Int)
              deriving (Eq, Show)
-
 
 -- |
 data GameStatus = Impasse
                 | Ended Tile [V2 Int]
                 | Ongoing
                 deriving (Eq, Show)
-
 
 -- |
 -- TODO | - Polymorphic, n-dimensional (?)
@@ -100,7 +97,6 @@ data TicTacToe = TicTacToe {
   fLayout  :: BoardLayout,         --
   fInput   :: Input
 } deriving (Show)
-
 
 -- |
 data BoardLayout = BoardLayout {
@@ -326,12 +322,13 @@ newGame initial sideLength = TicTacToe {
 
 -- |
 runTicTacToe :: IO (Either String ())
-runTicTacToe = runApplication
-                 ("Almost Chess")
-                 (V2 450 450)
-                 (\scene game -> let (V2 dx dy) = game^.input.frameSize in renderDrawing dx dy Chroma.white $ drawing scene game)
-                 (\msg old -> update msg $ old { fInput = onevent msg (old~>input) })
-                 (\initial -> pure $ newGame initial 3)
+runTicTacToe = run $ Application {
+  title      = "Almost Chess",
+  size       = V2 450 450,
+  draw       = \scene game -> let (V2 dx dy) = game^.input.frameSize in renderDrawing dx dy Chroma.white $ drawing scene game,
+  update     = \msg old -> Main.update msg $ old { fInput = onevent msg (old~>input) },
+  initialise = \_ initial -> pure $ newGame initial 3
+}
 
 -- |
 main :: IO ()

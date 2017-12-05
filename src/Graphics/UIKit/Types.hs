@@ -45,6 +45,13 @@ import Data.AABB(AABB(..))
 type MessageChannel = TChan SystemEvent
 
 -- |
+-- TODO | - Think about the best way to define this type
+type EffectsChannel = TChan Effect
+
+-- |
+type Effect = IO ()
+
+-- |
 -- TODO | - Complete (resize, minimise, maximise, enter, leave, Pending FileDrop, etc.)
 --        - Elm style event mapping (eg. UIEvent -> AppAction) (?)
 --        - Rename (?)
